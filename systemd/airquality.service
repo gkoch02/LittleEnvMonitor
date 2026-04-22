@@ -1,0 +1,15 @@
+[Unit]
+Description=Air Quality Monitor (PurpleAir → e-ink display)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/pi/LittleEnvMonitor/airQuality.py
+User=pi
+WorkingDirectory=/home/pi/LittleEnvMonitor
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

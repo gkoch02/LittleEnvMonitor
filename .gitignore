@@ -1,0 +1,8 @@
+# Real config contains API key — never commit it
+airquality.conf
+
+__pycache__/
+*.pyc
+*.pyo
+.last_pm25
+.DS_Store

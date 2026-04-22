@@ -1,0 +1,3 @@
+[purpleair]
+api_key = YOUR_PURPLEAIR_API_KEY
+sensor_id = YOUR_SENSOR_ID
