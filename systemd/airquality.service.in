@@ -1,0 +1,31 @@
+[Unit]
+Description=Air Quality Monitor (PurpleAir to e-ink display)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@REPO_DIR@
+ExecStart=@PYTHON@ @REPO_DIR@/airQuality.py
+Environment=AIRQUALITY_STATE_DIR=@STATE_DIR@
+TimeoutStartSec=120
+Restart=on-failure
+RestartSec=30
+
+# Sandboxing — kept minimal because RPi.GPIO/spidev need /dev access.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=@STATE_DIR@
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
