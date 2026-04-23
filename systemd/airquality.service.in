@@ -11,8 +11,10 @@ WorkingDirectory=@REPO_DIR@
 ExecStart=@PYTHON@ @REPO_DIR@/airQuality.py
 Environment=AIRQUALITY_STATE_DIR=@STATE_DIR@
 TimeoutStartSec=120
-Restart=on-failure
-RestartSec=30
+# No Restart= here on purpose: the timer is the retry mechanism. A
+# cached-fallback run still exits 1 (so journalctl/monitoring can see
+# the outage), and we don't want systemd to relaunch every 30s on top
+# of the 30-min timer tick.
 
 # Sandboxing — kept minimal because RPi.GPIO/spidev need /dev access.
 NoNewPrivileges=true
