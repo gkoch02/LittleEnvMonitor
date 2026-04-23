@@ -4,5 +4,11 @@ airquality.conf
 __pycache__/
 *.pyc
 *.pyo
-.last_pm25
 .DS_Store
+*.swp
+
+# Local virtualenv created by deploy.sh
+.venv/
+
+# Legacy cache file (state now lives under $XDG_STATE_HOME/airquality/)
+.last_pm25
