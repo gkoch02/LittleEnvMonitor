@@ -45,14 +45,7 @@ def test_valid_config_returns_key_and_id(tmp_path):
     api_key, sensor_id, weather = airQuality.load_config(str(conf))
     assert api_key == "real-key"
     assert sensor_id == 98765
-    assert weather == (airQuality.DEFAULT_LATITUDE, airQuality.DEFAULT_LONGITUDE)
-
-
-def test_default_weather_coords_are_campbell_ca():
-    # Campbell, CA 95008 centroid. Update DEFAULT_LATITUDE/LONGITUDE together
-    # with this test if the default location ever changes.
-    assert airQuality.DEFAULT_LATITUDE == pytest.approx(37.2872, abs=0.01)
-    assert airQuality.DEFAULT_LONGITUDE == pytest.approx(-121.9500, abs=0.01)
+    assert weather is None
 
 
 def test_api_key_whitespace_is_stripped(tmp_path):

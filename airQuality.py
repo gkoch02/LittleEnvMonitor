@@ -31,12 +31,6 @@ FONT_PATH_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 # PM2.5 µg/m³ change required before flagging "AQI Rising!"
 TREND_THRESHOLD = 5.0
 
-# Default fallback location: Campbell, CA 95008. Used by fetch_local_weather()
-# when the PurpleAir reading drops temp/humidity and airquality.conf has no
-# [weather] section. Override per-device by adding [weather] latitude/longitude.
-DEFAULT_LATITUDE = 37.2872
-DEFAULT_LONGITUDE = -121.9500
-
 
 def load_config(path):
     if not os.path.isfile(path):
@@ -54,7 +48,7 @@ def load_config(path):
     if not api_key or api_key == "YOUR_PURPLEAIR_API_KEY":
         raise SystemExit(f"Set a real api_key in {path}")
 
-    weather_coords = (DEFAULT_LATITUDE, DEFAULT_LONGITUDE)
+    weather_coords = None
     if parser.has_section("weather"):
         try:
             lat = float(parser["weather"]["latitude"])
@@ -246,14 +240,19 @@ def main():
     try:
         data = fetch_purpleair_data(sensor_id, api_key)
         if _is_missing(data["Temp"]) or _is_missing(data["Humidity"]):
-            try:
-                weather = fetch_local_weather(*weather_coords)
-                if _is_missing(data["Temp"]):
-                    data["Temp"] = weather["Temp"]
-                if _is_missing(data["Humidity"]):
-                    data["Humidity"] = weather["Humidity"]
-            except Exception:
-                log.exception("Local weather fallback failed")
+            if weather_coords is not None:
+                try:
+                    weather = fetch_local_weather(*weather_coords)
+                    if _is_missing(data["Temp"]):
+                        data["Temp"] = weather["Temp"]
+                    if _is_missing(data["Humidity"]):
+                        data["Humidity"] = weather["Humidity"]
+                except Exception:
+                    log.exception("Local weather fallback failed")
+            else:
+                log.info(
+                    "PurpleAir missing temp/humidity but no [weather] coords configured"
+                )
         current_pm25 = float(data["PM2.5"])
         cached = read_cache()
         last_pm25 = None
