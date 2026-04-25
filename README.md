@@ -80,6 +80,17 @@ systemctl status airquality.timer
 systemctl list-timers airquality.timer
 ```
 
+## Tests
+
+The test suite covers the platform-independent code paths (AQI classification, config parsing, PurpleAir HTTP client with retry logic, and the JSON cache); the e-ink display path is excluded because it requires Pi hardware. Tests run on any machine — no `RPi.GPIO`/`spidev` needed.
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```
+
+CI runs the same suite on every push and pull request across Python 3.10, 3.11, and 3.12 (see `.github/workflows/ci.yml`).
+
 ## Files
 
 | File | Purpose |
@@ -87,7 +98,10 @@ systemctl list-timers airquality.timer
 | `airQuality.py` | Main script — fetches data, classifies AQI, drives display |
 | `airquality.conf.example` | Config template (copy to `airquality.conf` and fill in) |
 | `deploy.sh` | One-shot deploy script for fresh Pi setup |
-| `requirements.txt` | Python dependencies |
+| `requirements.txt` | Runtime Python dependencies (includes Pi-only hardware libs) |
+| `requirements-dev.txt` | Test dependencies (works on any machine) |
+| `tests/` | Pytest suite for the platform-independent code paths |
+| `.github/workflows/ci.yml` | CI workflow that runs `pytest` on push and pull request |
 | `systemd/airquality.service.in` | systemd oneshot service unit template — rendered by `deploy.sh` |
 | `systemd/airquality.timer` | systemd timer (every 30 min, 8 AM–9:30 PM) |
 | `waveshare_epd/` | Waveshare e-Paper Python library (MIT, from [Waveshare's e-Paper repo](https://github.com/waveshare/e-Paper)). See `waveshare_epd/UPSTREAM.md` for vendored versions. |

@@ -1,0 +1,6 @@
+# Dev / CI dependencies — enough to run the test suite on any machine.
+# On the Pi, also install requirements.txt for the hardware libraries
+# (RPi.GPIO, spidev), which only build on a Pi.
+Pillow>=10.0,<12.0
+requests>=2.31,<3.0
+pytest>=8.0,<10.0

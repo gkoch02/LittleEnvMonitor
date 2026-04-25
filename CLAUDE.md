@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A single-script Raspberry Pi air quality monitor. `airQuality.py` runs once per systemd timer tick, fetches a PurpleAir sensor via the PurpleAir API, renders the reading to a Waveshare 2.13" black/red e-ink display (`epd2in13b_V4`), and caches the full reading so the next tick can fall back if the fetch fails.
 
-There is no build step, no test suite, and no package — `airQuality.py` is the entry point and everything else is supporting infrastructure.
+There is no build step and no package — `airQuality.py` is the entry point and everything else is supporting infrastructure. A small pytest suite under `tests/` covers the platform-independent code paths (AQI classification, config parsing, the PurpleAir HTTP client, and the JSON cache); GitHub Actions runs it on every push and pull request.
 
 ## Commands
 
@@ -35,6 +35,12 @@ systemctl list-timers airquality.timer
 Override the cache location for local testing without touching `/var/lib/airquality/`:
 ```bash
 AIRQUALITY_STATE_DIR=/tmp/aq .venv/bin/python airQuality.py
+```
+
+Run the test suite (works on any machine — does not require Pi hardware libs):
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest
 ```
 
 ## Architecture notes worth knowing up front
