@@ -2,7 +2,7 @@
 
 An air quality monitor for a Raspberry Pi Zero driving a [Waveshare 2.13" black/red e-ink display (V4)](https://www.waveshare.com/wiki/2.13inch_e-Paper_HAT_%28E%29_Manual).
 
-Pulls PM2.5, PM10, temperature, and humidity from a [PurpleAir](https://www2.purpleair.com) sensor via the PurpleAir API, classifies the AQI, and renders it to the display every 30 minutes. If the live fetch fails, it falls back to the last cached reading (full payload, marked `[CACHED]`).
+Pulls PM2.5, PM10, temperature, and humidity from a [PurpleAir](https://www2.purpleair.com) sensor via the PurpleAir API, classifies the AQI, and renders it to the display every 30 minutes during the day (08:00–21:30). If the live fetch fails, the script falls back to the last cached reading (the full payload, with the header relabelled `[CACHED]`) so the panel keeps showing useful data through transient outages.
 
 ## Hardware
 
@@ -12,10 +12,13 @@ Pulls PM2.5, PM10, temperature, and humidity from a [PurpleAir](https://www2.pur
 
 ## Display layout
 
-- **Header (red):** "Air Quality - Campbell", or "AQI Rising!" if PM2.5 increased since last reading
-- **Body (black):** PM2.5 with trend arrow, PM10, AQI category, temperature/humidity
-- **AQI category (red):** when Unhealthy or worse
-- **Timestamp (red, bottom-right):** time of last update
+- **Header (red).** Shows one of three things, in priority order:
+  - `"Air Quality [CACHED]"` — when the live fetch failed and the reading came from disk.
+  - `"AQI Rising!"` — when PM2.5 has climbed by at least `TREND_THRESHOLD` µg/m³ since the previous reading.
+  - The location label otherwise. This is hardcoded as `"Air Quality - Campbell"` in `airQuality.py`; change the string for your own location.
+- **Body (black).** PM2.5 with a `+`/`-` trend marker, PM10, AQI category, temperature, and humidity.
+- **AQI category (red)** when the category is "Unhealthy for Sensitive Groups" or worse (PM2.5 > 35.4 µg/m³); otherwise black.
+- **Timestamp (red, bottom-right)** — the time of the last update.
 
 ## Rebuilding from scratch
 
@@ -39,12 +42,14 @@ It works regardless of what user you're running as (no hardcoded `pi`/`/home/pi`
 
 ## Configuration
 
-Copy the example config and fill in your credentials:
+`deploy.sh` will create `airquality.conf` from the example and prompt you to edit it. If you'd rather set it up by hand:
 
 ```bash
 cp airquality.conf.example airquality.conf
 nano airquality.conf
 ```
+
+The file is a tiny INI:
 
 ```ini
 [purpleair]
@@ -52,17 +57,27 @@ api_key = YOUR_PURPLEAIR_API_KEY
 sensor_id = YOUR_SENSOR_ID
 ```
 
-`airquality.conf` is gitignored — it will never be committed.
+- **`api_key`** — request one at [api.purpleair.com](https://api.purpleair.com) (PurpleAir issues a read key and a write key; this script only needs the read key).
+- **`sensor_id`** — the integer that appears in the PurpleAir map URL when you click your sensor.
 
-Your PurpleAir API key is available at [api.purpleair.com](https://api.purpleair.com). Your sensor ID appears in the PurpleAir map URL when you click your sensor.
+`airquality.conf` is gitignored, so your key won't be committed.
 
 ## Schedule
 
-Runs every 30 minutes between 8:00 AM and 9:30 PM via a systemd timer. To trigger a manual run:
+Runs every 30 minutes between 08:00 and 21:30 via a systemd timer (no overnight refreshes). On each tick the script either renders a fresh reading or — if PurpleAir is unreachable — re-renders the last cached reading marked `[CACHED]`, so the display keeps showing useful data through transient outages.
+
+To trigger a manual run and watch logs:
 
 ```bash
 sudo systemctl start airquality.service
 journalctl -u airquality.service -f
+```
+
+To check the timer:
+
+```bash
+systemctl status airquality.timer
+systemctl list-timers airquality.timer
 ```
 
 ## Files
