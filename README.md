@@ -4,6 +4,10 @@ An air quality monitor for a Raspberry Pi Zero driving a [Waveshare 2.13" black/
 
 Pulls PM2.5, PM10, temperature, and humidity from a [PurpleAir](https://www2.purpleair.com) sensor via the PurpleAir API, classifies the AQI, and renders it to the display every 30 minutes during the day (08:00–21:30). If the live fetch fails, the script falls back to the last cached reading (the full payload, with the header relabelled `[CACHED]`) so the panel keeps showing useful data through transient outages.
 
+![Preview of the e-ink display output with dummy data](docs/preview.png)
+
+*Preview rendered with dummy data — regenerate with `python docs/generate_preview.py` after layout changes.*
+
 ## Hardware
 
 - Raspberry Pi Zero (or any Pi with SPI)
