@@ -47,7 +47,19 @@ def load_config(path):
         raise SystemExit(f"Invalid config at {path}: {e}")
     if not api_key or api_key == "YOUR_PURPLEAIR_API_KEY":
         raise SystemExit(f"Set a real api_key in {path}")
-    return api_key, sensor_id
+
+    weather_coords = None
+    if parser.has_section("weather"):
+        try:
+            lat = float(parser["weather"]["latitude"])
+            lon = float(parser["weather"]["longitude"])
+        except (KeyError, ValueError) as e:
+            raise SystemExit(f"Invalid [weather] section in {path}: {e}")
+        weather_coords = (lat, lon)
+
+    city = parser.get("display", "city", fallback="Campbell").strip() or "Campbell"
+
+    return api_key, sensor_id, weather_coords, city
 
 
 def classify_aqi(pm25):
@@ -105,6 +117,33 @@ def fetch_purpleair_data(sensor_id, api_key, retries=3, delay=10, timeout=15):
     raise last_err
 
 
+def fetch_local_weather(latitude, longitude, timeout=10):
+    """Fetch current temp (°F) and humidity (%) from Open-Meteo as a PurpleAir fallback.
+
+    Open-Meteo is free and requires no API key. Missing fields come back as "N/A"
+    so the caller can keep the same shape as `fetch_purpleair_data`.
+    """
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={latitude}&longitude={longitude}"
+        "&current=temperature_2m,relative_humidity_2m"
+        "&temperature_unit=fahrenheit"
+    )
+    response = requests.get(url, timeout=timeout)
+    response.raise_for_status()
+    current = response.json().get("current") or {}
+    temp = current.get("temperature_2m")
+    humidity = current.get("relative_humidity_2m")
+    return {
+        "Temp": round(temp) if isinstance(temp, (int, float)) else "N/A",
+        "Humidity": round(humidity) if isinstance(humidity, (int, float)) else "N/A",
+    }
+
+
+def _is_missing(value):
+    return value is None or value == "N/A"
+
+
 def write_cache(data):
     os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
     tmp = CACHE_PATH + ".tmp"
@@ -121,7 +160,7 @@ def read_cache():
         return None
 
 
-def display_air_quality(data, alert, trend_symbol, category, cat_color, stale=False):
+def display_air_quality(data, alert, trend_symbol, category, cat_color, city, stale=False):
     epd = epd2in13b_V4.EPD()
     try:
         epd.init()
@@ -145,7 +184,7 @@ def display_air_quality(data, alert, trend_symbol, category, cat_color, stale=Fa
         elif alert:
             draw_red.text((10, 10), "AQI Rising!", font=font_large, fill=0)
         else:
-            draw_red.text((10, 10), "Air Quality - Campbell", font=font_large, fill=0)
+            draw_red.text((10, 10), f"Air Quality - {city}", font=font_large, fill=0)
 
         y_offset = 40
         spacing = 18
@@ -199,9 +238,23 @@ def display_air_quality(data, alert, trend_symbol, category, cat_color, stale=Fa
 
 
 def main():
-    api_key, sensor_id = load_config(CONF_PATH)
+    api_key, sensor_id, weather_coords, city = load_config(CONF_PATH)
     try:
         data = fetch_purpleair_data(sensor_id, api_key)
+        if _is_missing(data["Temp"]) or _is_missing(data["Humidity"]):
+            if weather_coords is not None:
+                try:
+                    weather = fetch_local_weather(*weather_coords)
+                    if _is_missing(data["Temp"]):
+                        data["Temp"] = weather["Temp"]
+                    if _is_missing(data["Humidity"]):
+                        data["Humidity"] = weather["Humidity"]
+                except Exception:
+                    log.exception("Local weather fallback failed")
+            else:
+                log.info(
+                    "PurpleAir missing temp/humidity but no [weather] coords configured"
+                )
         current_pm25 = float(data["PM2.5"])
         cached = read_cache()
         last_pm25 = None
@@ -213,7 +266,7 @@ def main():
         rising = last_pm25 is not None and (current_pm25 - last_pm25) >= TREND_THRESHOLD
         trend_symbol = "+" if last_pm25 is not None and current_pm25 > last_pm25 else "-"
         category, cat_color = classify_aqi(current_pm25)
-        display_air_quality(data, rising, trend_symbol, category, cat_color)
+        display_air_quality(data, rising, trend_symbol, category, cat_color, city)
         write_cache(data)
         return 0
     except Exception:
@@ -228,7 +281,7 @@ def main():
             return 1
         category, cat_color = classify_aqi(pm25)
         try:
-            display_air_quality(cached, False, "?", category, cat_color, stale=True)
+            display_air_quality(cached, False, "?", category, cat_color, city, stale=True)
         except Exception:
             log.exception("Failed to display cached data")
         return 1
