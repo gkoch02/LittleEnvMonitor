@@ -57,7 +57,9 @@ def load_config(path):
             raise SystemExit(f"Invalid [weather] section in {path}: {e}")
         weather_coords = (lat, lon)
 
-    return api_key, sensor_id, weather_coords
+    city = parser.get("display", "city", fallback="Campbell").strip() or "Campbell"
+
+    return api_key, sensor_id, weather_coords, city
 
 
 def classify_aqi(pm25):
@@ -158,7 +160,7 @@ def read_cache():
         return None
 
 
-def display_air_quality(data, alert, trend_symbol, category, cat_color, stale=False):
+def display_air_quality(data, alert, trend_symbol, category, cat_color, city, stale=False):
     epd = epd2in13b_V4.EPD()
     try:
         epd.init()
@@ -182,7 +184,7 @@ def display_air_quality(data, alert, trend_symbol, category, cat_color, stale=Fa
         elif alert:
             draw_red.text((10, 10), "AQI Rising!", font=font_large, fill=0)
         else:
-            draw_red.text((10, 10), "Air Quality - Campbell", font=font_large, fill=0)
+            draw_red.text((10, 10), f"Air Quality - {city}", font=font_large, fill=0)
 
         y_offset = 40
         spacing = 18
@@ -236,7 +238,7 @@ def display_air_quality(data, alert, trend_symbol, category, cat_color, stale=Fa
 
 
 def main():
-    api_key, sensor_id, weather_coords = load_config(CONF_PATH)
+    api_key, sensor_id, weather_coords, city = load_config(CONF_PATH)
     try:
         data = fetch_purpleair_data(sensor_id, api_key)
         if _is_missing(data["Temp"]) or _is_missing(data["Humidity"]):
@@ -264,7 +266,7 @@ def main():
         rising = last_pm25 is not None and (current_pm25 - last_pm25) >= TREND_THRESHOLD
         trend_symbol = "+" if last_pm25 is not None and current_pm25 > last_pm25 else "-"
         category, cat_color = classify_aqi(current_pm25)
-        display_air_quality(data, rising, trend_symbol, category, cat_color)
+        display_air_quality(data, rising, trend_symbol, category, cat_color, city)
         write_cache(data)
         return 0
     except Exception:
@@ -279,7 +281,7 @@ def main():
             return 1
         category, cat_color = classify_aqi(pm25)
         try:
-            display_air_quality(cached, False, "?", category, cat_color, stale=True)
+            display_air_quality(cached, False, "?", category, cat_color, city, stale=True)
         except Exception:
             log.exception("Failed to display cached data")
         return 1

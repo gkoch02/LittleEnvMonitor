@@ -8,3 +8,8 @@ sensor_id = YOUR_SENSOR_ID
 [weather]
 latitude = 37.2872
 longitude = -121.9500
+
+# Optional. City name shown in the e-ink title bar ("Air Quality - <city>").
+# Defaults to "Campbell" if omitted.
+[display]
+city = Campbell
