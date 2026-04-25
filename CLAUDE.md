@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A single-script Raspberry Pi air quality monitor. `airQuality.py` runs once per systemd timer tick, fetches a PurpleAir sensor via the PurpleAir API, renders the reading to a Waveshare 2.13" black/red e-ink display (`epd2in13b_V4`), and caches the full reading so the next tick can fall back if the fetch fails.
 
-There is no build step, no test suite, and no package — `airQuality.py` is the entry point and everything else is supporting infrastructure.
+There is no build step and no package — `airQuality.py` is the entry point and everything else is supporting infrastructure. A small pytest suite under `tests/` covers the platform-independent code paths (AQI classification, config parsing, the PurpleAir HTTP client, and the JSON cache); GitHub Actions runs it on every push and pull request.
 
 ## Commands
 
@@ -37,6 +37,12 @@ Override the cache location for local testing without touching `/var/lib/airqual
 AIRQUALITY_STATE_DIR=/tmp/aq .venv/bin/python airQuality.py
 ```
 
+Run the test suite (works on any machine — does not require Pi hardware libs):
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```
+
 ## Architecture notes worth knowing up front
 
 **Config is loaded inside `main()`, not at import.** Historically it loaded at module scope, which meant a missing/invalid `airquality.conf` crashed before the cached-fallback path could run. If you refactor, keep `load_config()` inside `main()` and keep it raising `SystemExit` with a human-readable message.
@@ -45,9 +51,9 @@ AIRQUALITY_STATE_DIR=/tmp/aq .venv/bin/python airQuality.py
 
 **HTTP retry logic distinguishes 4xx from 5xx/network errors.** `fetch_purpleair_data()` only retries on timeouts, connection errors, and 5xx. A 401 (bad key) or 404 (bad sensor id) fails fast with a `RuntimeError` — don't widen this to retry all errors, it just delays the real failure by 30+ seconds.
 
-**Two separate caches in the code, intentionally.** The live run writes the full reading JSON to `$AIRQUALITY_STATE_DIR/airquality/last_reading.json` (defaults via `XDG_STATE_HOME`). The fallback path reads the same file and displays it with `stale=True` so the header shows "Air Quality [CACHED]". Don't go back to the old PM2.5-only text cache — the cached display needs PM10/Temp/Humidity too.
+**One JSON cache, used for both fallback rendering and trend detection.** The live run writes the full reading to `$AIRQUALITY_STATE_DIR/airquality/last_reading.json` (defaulting via `XDG_STATE_HOME`). On the next tick that same file is read for two purposes: computing the PM2.5 delta that drives the trend marker and the "AQI Rising!" banner, and — if the live fetch fails — feeding a `stale=True` render that shows "Air Quality [CACHED]". An older PM2.5-only text cache (`.last_pm25`) used to live in the repo root; don't reintroduce it, the cached display path needs the full PM10/Temp/Humidity payload.
 
-**Trend arrow vs. "AQI Rising!" banner use different thresholds.** The `+/-` arrow flips on any change; the red "AQI Rising!" banner only fires when PM2.5 has climbed by at least `TREND_THRESHOLD` (5 µg/m³) since the cached reading. Tune `TREND_THRESHOLD` at the top of `airQuality.py` if the banner is too noisy/quiet.
+**Trend marker vs. "AQI Rising!" banner use different rules.** The `+/-` next to PM2.5 shows `+` only when the current PM2.5 is strictly higher than the cached value, and `-` otherwise (including when the value held steady, fell, or no cached reading exists). The red "AQI Rising!" banner is stricter: it fires only when PM2.5 has climbed by at least `TREND_THRESHOLD` (5 µg/m³) since the cached reading. Tune `TREND_THRESHOLD` at the top of `airQuality.py` if the banner is too noisy or too quiet.
 
 **`systemd/airquality.service.in` is a template, not an installable unit.** `deploy.sh` substitutes `@USER@`, `@GROUP@`, `@REPO_DIR@`, `@PYTHON@`, `@STATE_DIR@` and installs the rendered file to `/etc/systemd/system/airquality.service`. If you edit the unit, edit the `.in` template and re-run `deploy.sh` (or `sed` + `systemctl daemon-reload` manually). Don't hardcode `pi`/`/home/pi` — deploys run as any user.
 
