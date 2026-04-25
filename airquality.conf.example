@@ -1,3 +1,10 @@
 [purpleair]
 api_key = YOUR_PURPLEAIR_API_KEY
 sensor_id = YOUR_SENSOR_ID
+
+# Optional. If the PurpleAir sensor stops reporting temperature or humidity,
+# these coords are used to pull a fallback reading from Open-Meteo (no key
+# required). Omit the section to disable the fallback.
+[weather]
+latitude = 37.2872
+longitude = -121.9500
