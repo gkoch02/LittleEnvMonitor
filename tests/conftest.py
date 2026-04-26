@@ -24,15 +24,20 @@ class FakeEPD:
 
     Records every method call so tests can assert on the sequence. Defaults to
     a successful run (`init` returns 0, all methods are no-ops). Override
-    behavior per-test by reassigning class attributes.
+    per-method behavior with `monkeypatch.setattr(FakeEPD, "init", ...)`.
+
+    Each constructed instance is appended to `FakeEPD.instances`; tests that
+    need to inspect what `display_air_quality` did should clear this list at
+    setup (the auto-clear fixture in `tests/test_display.py` does so).
     """
 
     width = 122
     height = 250
+    instances: list = []  # populated in __init__
 
-    # Per-instance call log; set in __init__.
     def __init__(self):
         self.calls = []
+        FakeEPD.instances.append(self)
 
     def init(self):
         self.calls.append(("init",))

@@ -40,6 +40,11 @@ TREND_THRESHOLD = 5.0
 # Hard ceiling on the e-ink draw call — the vendored busy-wait has no timeout
 # of its own, so we fence it here to stay inside systemd's TimeoutStartSec.
 DISPLAY_TIMEOUT_SEC = 60
+# Separate budget for epd.sleep() so a stuck shutdown can't leak past the unit.
+SLEEP_TIMEOUT_SEC = 10
+# Cap any Retry-After the server hands us; a 5-minute hint would blow the
+# 120s systemd TimeoutStartSec before we ever reached the cache fallback.
+RETRY_AFTER_CAP_SEC = 30
 
 
 def load_config(path):
@@ -53,10 +58,10 @@ def load_config(path):
     try:
         # Env var wins over the config file so the systemd unit can ship the
         # secret via EnvironmentFile= (mode 0600) instead of the repo dir.
-        api_key = (
-            os.environ.get("PURPLEAIR_API_KEY")
-            or parser["purpleair"]["api_key"]
-        ).strip()
+        # Strip the env var first so a whitespace-only value falls back to
+        # the file rather than clobbering it.
+        env_key = (os.environ.get("PURPLEAIR_API_KEY") or "").strip()
+        api_key = env_key or parser["purpleair"]["api_key"].strip()
         sensor_id = int(parser["purpleair"]["sensor_id"])
     except (KeyError, ValueError) as e:
         raise SystemExit(f"Invalid config at {path}: {e}") from e
@@ -122,6 +127,8 @@ def classify_aqi(pm25):
 
 
 def fetch_purpleair_data(sensor_id, api_key, retries=3, timeout=15):
+    if retries < 1:
+        raise ValueError(f"retries must be >= 1, got {retries}")
     url = f"https://api.purpleair.com/v1/sensors/{sensor_id}"
     headers = {"X-API-Key": api_key}
     fields = ["pm2.5", "pm10.0", "humidity", "temperature", "last_seen"]
@@ -141,7 +148,10 @@ def fetch_purpleair_data(sensor_id, api_key, retries=3, timeout=15):
             if response.status_code == 429:
                 last_err = RuntimeError("HTTP 429 rate limited")
                 try:
-                    retry_after = int(response.headers.get("Retry-After", "0")) or None
+                    # Spec allows an HTTP-date here too; we only handle the
+                    # integer-seconds form and fall through to backoff otherwise.
+                    parsed = int(response.headers.get("Retry-After", "0"))
+                    retry_after = min(parsed, RETRY_AFTER_CAP_SEC) or None
                 except ValueError:
                     retry_after = None
                 log.warning(
@@ -170,10 +180,14 @@ def fetch_purpleair_data(sensor_id, api_key, retries=3, timeout=15):
                     ),
                 }
         if attempt < retries:
-            # Exponential backoff: 2s, 4s, 8s (cap 8s). 429 honors Retry-After if present.
+            # Backoff between attempts: 2/4/8s (cap 8s). With retries=3 the
+            # total wait is 2+4 = 6s; the 8s case only kicks in for retries>=4.
+            # 429 honors Retry-After when present (capped above).
             sleep_for = retry_after if retry_after is not None else min(2 ** attempt, 8)
             time.sleep(sleep_for)
-    assert last_err is not None  # all loop paths set last_err before continuing
+    # `retries >= 1` is enforced above, so the loop ran at least once and
+    # last_err was set on every non-success branch.
+    assert last_err is not None
     raise last_err
 
 
@@ -254,83 +268,89 @@ def write_heartbeat():
 
 
 def display_air_quality(data, alert, trend_symbol, category, cat_color, city, stale=False):
+    # Two alarms because SIGALRM is one-shot: once it fires (or is cancelled by
+    # the with-exit), epd.sleep() in the finally would no longer be fenced.
+    # The second alarm keeps the panel-sleep invariant honest even when the
+    # main draw timed out — every blocking SPI/busy-wait path stays bounded.
     epd = epd2in13b_V4.EPD()
     try:
-        # Vendored waveshare returns -1 from init() on SPI/GPIO failure rather
-        # than raising — surface it explicitly so the cache-fallback branch in
-        # main() can take over.
-        if epd.init() == -1:
-            raise RuntimeError("epd.init failed (SPI/GPIO unavailable)")
-        epd.Clear()
-
-        font_large = _load_font(18)
-        font_small = _load_font(16)
-        font_xsmall = _load_font(12)
-
-        width, height = epd.height, epd.width
-        image_black = Image.new("1", (width, height), 255)
-        image_red = Image.new("1", (width, height), 255)
-        draw_black = ImageDraw.Draw(image_black)
-        draw_red = ImageDraw.Draw(image_red)
-
-        draw_red.rectangle((5, 5, width - 5, height - 5), outline=0, width=3)
-        draw_black.rectangle((3, 3, width - 3, height - 3), outline=0, width=3)
-
-        if stale:
-            draw_red.text((10, 10), "Air Quality [CACHED]", font=font_large, fill=0)
-        elif alert:
-            draw_red.text((10, 10), "AQI Rising!", font=font_large, fill=0)
-        else:
-            draw_red.text((10, 10), f"Air Quality - {city}", font=font_large, fill=0)
-
-        y_offset = 40
-        spacing = 18
-        draw_black.line(
-            [(10, y_offset - 4), (width - 10, y_offset - 4)], fill=0, width=1
-        )
-        draw_black.text(
-            (10, y_offset),
-            f"PM2.5: {data['PM2.5']} µg/m³  {trend_symbol}",
-            font=font_small,
-            fill=0,
-        )
-        draw_black.text(
-            (10, y_offset + spacing),
-            f"PM10:  {data['PM10']} µg/m³",
-            font=font_small,
-            fill=0,
-        )
-        draw_black.text(
-            (10, y_offset + 3 * spacing),
-            f"T/H:   {data['Temp']} °F / {data['Humidity']}%",
-            font=font_small,
-            fill=0,
-        )
-
-        aqi_y = y_offset + 2 * spacing
-        aqi_text = f"AQI: {category}"
-        if cat_color == "red":
-            draw_red.text((10, aqi_y), aqi_text, font=font_small, fill=0)
-        else:
-            draw_black.text((10, aqi_y), aqi_text, font=font_small, fill=0)
-
-        timestamp = datetime.now().strftime("%I:%M%p").lstrip("0").lower()
-        bbox = font_xsmall.getbbox(timestamp)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-        x = width - text_width - 10
-        y = height - text_height - 12
-        draw_red.text((x, y), timestamp, font=font_xsmall, fill=0)
-
-        image_black = image_black.rotate(180)
-        image_red = image_red.rotate(180)
-
         with _alarm(DISPLAY_TIMEOUT_SEC):
+            # Vendored waveshare returns -1 from init() on SPI/GPIO failure
+            # rather than raising — surface it explicitly so the cache-fallback
+            # branch in main() can take over.
+            if epd.init() == -1:
+                raise RuntimeError("epd.init failed (SPI/GPIO unavailable)")
+            epd.Clear()
+
+            font_large = _load_font(18)
+            font_small = _load_font(16)
+            font_xsmall = _load_font(12)
+
+            width, height = epd.height, epd.width
+            image_black = Image.new("1", (width, height), 255)
+            image_red = Image.new("1", (width, height), 255)
+            draw_black = ImageDraw.Draw(image_black)
+            draw_red = ImageDraw.Draw(image_red)
+
+            draw_red.rectangle((5, 5, width - 5, height - 5), outline=0, width=3)
+            draw_black.rectangle((3, 3, width - 3, height - 3), outline=0, width=3)
+
+            if stale:
+                draw_red.text((10, 10), "Air Quality [CACHED]", font=font_large, fill=0)
+            elif alert:
+                draw_red.text((10, 10), "AQI Rising!", font=font_large, fill=0)
+            else:
+                draw_red.text((10, 10), f"Air Quality - {city}", font=font_large, fill=0)
+
+            y_offset = 40
+            spacing = 18
+            draw_black.line(
+                [(10, y_offset - 4), (width - 10, y_offset - 4)], fill=0, width=1
+            )
+            draw_black.text(
+                (10, y_offset),
+                f"PM2.5: {data['PM2.5']} µg/m³  {trend_symbol}",
+                font=font_small,
+                fill=0,
+            )
+            draw_black.text(
+                (10, y_offset + spacing),
+                f"PM10:  {data['PM10']} µg/m³",
+                font=font_small,
+                fill=0,
+            )
+            draw_black.text(
+                (10, y_offset + 3 * spacing),
+                f"T/H:   {data['Temp']} °F / {data['Humidity']}%",
+                font=font_small,
+                fill=0,
+            )
+
+            aqi_y = y_offset + 2 * spacing
+            aqi_text = f"AQI: {category}"
+            if cat_color == "red":
+                draw_red.text((10, aqi_y), aqi_text, font=font_small, fill=0)
+            else:
+                draw_black.text((10, aqi_y), aqi_text, font=font_small, fill=0)
+
+            timestamp = datetime.now().strftime("%I:%M%p").lstrip("0").lower()
+            bbox = font_xsmall.getbbox(timestamp)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            x = width - text_width - 10
+            y = height - text_height - 12
+            draw_red.text((x, y), timestamp, font=font_xsmall, fill=0)
+
+            image_black = image_black.rotate(180)
+            image_red = image_red.rotate(180)
+
             epd.display(epd.getbuffer(image_black), epd.getbuffer(image_red))
     finally:
         # Always sleep the panel; leaving it powered shortens its life.
+        # Fresh alarm because the outer one may have already fired or expired.
         try:
-            epd.sleep()
+            with _alarm(SLEEP_TIMEOUT_SEC):
+                epd.sleep()
         except Exception:
             log.exception("Failed to put e-ink panel to sleep")
 
@@ -340,6 +360,31 @@ def _summary(branch, pm25=None, rising=None, source=None):
         "summary path=%s pm25=%s rising=%s source=%s",
         branch, pm25, rising, source,
     )
+
+
+def _render_cached_fallback(city, source):
+    """Render the previous reading marked [CACHED]. Always returns exit code 1.
+
+    Split out so the live path's persistence errors (write_cache/write_heartbeat)
+    don't accidentally trigger a stale render on top of a successful display.
+    """
+    cached = read_cache()
+    if not cached:
+        _summary("fail", source=source)
+        return 1
+    try:
+        pm25 = float(cached["PM2.5"])
+    except (KeyError, TypeError, ValueError):
+        log.error("Cached reading is unusable")
+        _summary("fail", source=source)
+        return 1
+    category, cat_color = classify_aqi(pm25)
+    try:
+        display_air_quality(cached, False, "?", category, cat_color, city, stale=True)
+    except Exception:
+        log.exception("Failed to display cached data")
+    _summary("cache_fallback", pm25=pm25, source=source)
+    return 1
 
 
 def main():
@@ -374,29 +419,19 @@ def main():
         trend_symbol = "+" if last_pm25 is not None and current_pm25 > last_pm25 else "-"
         category, cat_color = classify_aqi(current_pm25)
         display_air_quality(data, rising, trend_symbol, category, cat_color, city)
-        write_cache(data)
-        write_heartbeat()
-        _summary("live", pm25=current_pm25, rising=rising, source=source)
-        return 0
     except Exception:
         log.exception("Live fetch/display failed; trying cache")
-        cached = read_cache()
-        if not cached:
-            _summary("fail", source=source)
-            return 1
-        try:
-            pm25 = float(cached["PM2.5"])
-        except (KeyError, TypeError, ValueError):
-            log.error("Cached reading is unusable")
-            _summary("fail", source=source)
-            return 1
-        category, cat_color = classify_aqi(pm25)
-        try:
-            display_air_quality(cached, False, "?", category, cat_color, city, stale=True)
-        except Exception:
-            log.exception("Failed to display cached data")
-        _summary("cache_fallback", pm25=pm25, source=source)
-        return 1
+        return _render_cached_fallback(city, source)
+
+    # Display succeeded. Persistence failures here shouldn't downgrade the run
+    # to a cache-fallback render — the user's already looking at fresh data.
+    try:
+        write_cache(data)
+        write_heartbeat()
+    except OSError:
+        log.exception("Failed to persist cache/heartbeat after successful render")
+    _summary("live", pm25=current_pm25, rising=rising, source=source)
+    return 0
 
 
 if __name__ == "__main__":

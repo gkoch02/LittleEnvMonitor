@@ -10,7 +10,6 @@ select = ["E", "F", "W", "I", "UP", "B"]
 python_version = "3.10"
 ignore_missing_imports = true
 check_untyped_defs = true
-exclude = "waveshare_epd/"
 
 # The vendored Waveshare driver is read-only (see CLAUDE.md) and is not type
 # annotated — silence its diagnostics without weakening checks on our code.

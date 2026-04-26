@@ -72,7 +72,9 @@ sensor_id = YOUR_SENSOR_ID
 
 ### Heartbeat / external monitoring
 
-On each fully-successful run the script atomically writes a UTC ISO-8601 timestamp to `$AIRQUALITY_STATE_DIR/airquality/heartbeat`. It is **not** updated on the cache-fallback path, so an external monitor (a cron job, Healthchecks.io, etc.) can alert if the file's mtime is older than ~60 minutes — that catches "silently stuck in cache fallback" failures that exit codes alone won't surface.
+On each fully-successful run the script atomically writes a UTC ISO-8601 timestamp to `$AIRQUALITY_STATE_DIR/airquality/heartbeat`. It is **not** updated on the cache-fallback path, so an external monitor (a cron job, Healthchecks.io, etc.) can alert when the file goes stale — catching "silently stuck in cache fallback" failures that exit codes alone won't surface.
+
+The timer only fires between 08:00 and 21:30, so the heartbeat will naturally go ~10.5 hours stale overnight. Tune your alert threshold to "stale during the day" (e.g. mtime > 60 min old AND local time is within the run window), or alert only after sunrise on the first miss.
 
 ## Schedule
 

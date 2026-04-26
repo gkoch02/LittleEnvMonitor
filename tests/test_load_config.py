@@ -186,3 +186,14 @@ def test_env_var_blank_falls_back_to_config(tmp_path, monkeypatch):
     monkeypatch.setenv("PURPLEAIR_API_KEY", "")
     api_key, _, _, _ = airQuality.load_config(str(conf))
     assert api_key == "file-key"
+
+
+def test_env_var_whitespace_only_falls_back_to_config(tmp_path, monkeypatch):
+    """A misconfigured EnvironmentFile= shouldn't clobber a valid file key."""
+    conf = tmp_path / "airquality.conf"
+    conf.write_text(
+        "[purpleair]\napi_key = file-key\nsensor_id = 1\n"
+    )
+    monkeypatch.setenv("PURPLEAIR_API_KEY", "   \t\n")
+    api_key, _, _, _ = airQuality.load_config(str(conf))
+    assert api_key == "file-key"

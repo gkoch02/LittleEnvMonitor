@@ -212,3 +212,41 @@ def test_bad_config_exits_before_try_block(tmp_path, display_recorder, monkeypat
     with pytest.raises(SystemExit):
         airQuality.main()
     assert display_recorder == []  # never even reached the try
+
+
+def test_cache_write_failure_does_not_trigger_stale_render(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """Regression: a persistence error after a successful display must not flip
+    the run into the cache-fallback branch — the user already saw fresh data."""
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload())
+
+    def _boom(_data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(airQuality, "write_cache", _boom)
+
+    rc = airQuality.main()
+
+    assert rc == 0  # not 1 — fresh display still happened
+    assert len(display_recorder) == 1
+    assert display_recorder[0]["stale"] is False
+    # And no second [CACHED] render was issued.
+    assert all(call["stale"] is False for call in display_recorder)
+
+
+def test_heartbeat_failure_does_not_trigger_stale_render(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload())
+
+    def _boom():
+        raise OSError("read-only fs")
+
+    monkeypatch.setattr(airQuality, "write_heartbeat", _boom)
+
+    rc = airQuality.main()
+
+    assert rc == 0
+    assert len(display_recorder) == 1
+    assert display_recorder[0]["stale"] is False

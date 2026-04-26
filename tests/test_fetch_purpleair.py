@@ -130,3 +130,46 @@ def test_429_exhausts_retries_then_raises(mock_get):
     with pytest.raises(RuntimeError, match="429"):
         airQuality.fetch_purpleair_data(123, "key", retries=3)
     assert mock_get.call_count == 3
+
+
+def test_retries_below_one_rejected(mock_get):
+    """Guard against the assert-elided-under-O case from the review."""
+    with pytest.raises(ValueError, match="retries"):
+        airQuality.fetch_purpleair_data(123, "key", retries=0)
+    assert mock_get.call_count == 0
+
+
+def test_retry_after_is_capped(monkeypatch, mock_get):
+    """A 5-minute Retry-After hint must not exceed the cap."""
+    captured_sleeps = []
+    monkeypatch.setattr(airQuality.time, "sleep", lambda s: captured_sleeps.append(s))
+    payload = {
+        "sensor": {
+            "pm2.5": 1, "pm10.0": 1, "temperature": 1, "humidity": 1,
+            "last_seen": 1_700_000_000,
+        }
+    }
+    mock_get.side_effect = [
+        _mock_response(429, headers={"Retry-After": "300"}),
+        _mock_response(200, payload),
+    ]
+    airQuality.fetch_purpleair_data(123, "key", retries=2)
+    assert captured_sleeps == [airQuality.RETRY_AFTER_CAP_SEC]
+
+
+def test_retry_after_zero_falls_through_to_backoff(monkeypatch, mock_get):
+    captured_sleeps = []
+    monkeypatch.setattr(airQuality.time, "sleep", lambda s: captured_sleeps.append(s))
+    payload = {
+        "sensor": {
+            "pm2.5": 1, "pm10.0": 1, "temperature": 1, "humidity": 1,
+            "last_seen": 1_700_000_000,
+        }
+    }
+    mock_get.side_effect = [
+        _mock_response(429, headers={"Retry-After": "0"}),
+        _mock_response(200, payload),
+    ]
+    airQuality.fetch_purpleair_data(123, "key", retries=2)
+    # First retry without a usable Retry-After uses 2**1 = 2s.
+    assert captured_sleeps == [2]

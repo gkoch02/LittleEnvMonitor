@@ -1,8 +1,10 @@
 """Tests for `display_air_quality` end-to-end against the FakeEPD stub.
 
-These do real PIL rendering (DejaVuSans-Bold is present on Ubuntu CI runners
-via fonts-dejavu-core, and on the Pi via the deploy script). They cover the
-SR1 (`epd.init() == -1`) and SR2 (alarm watchdog) reliability fences.
+These do real PIL rendering (DejaVuSans-Bold ships with `fonts-dejavu-core`,
+preinstalled on Ubuntu CI runners and pulled in by `deploy.sh` on the Pi). They
+are the only coverage of the SR1 (`epd.init() == -1`) and SR2 (alarm watchdog)
+reliability fences — keeping them in the suite is what gets the project from
+~70 % coverage of `airQuality.py` to ~91 %.
 """
 import time
 
@@ -17,69 +19,34 @@ def _payload():
 
 
 @pytest.fixture(autouse=True)
-def _reset_epd_class(monkeypatch):
-    """Reset FakeEPD class-level overrides between tests."""
-    original_init = epd2in13b_V4.EPD.init
-    original_display = epd2in13b_V4.EPD.display
-    yield
-    epd2in13b_V4.EPD.init = original_init
-    epd2in13b_V4.EPD.display = original_display
+def _clear_epd_instances():
+    """Reset the shared FakeEPD instance log between tests."""
+    epd2in13b_V4.EPD.instances.clear()
 
 
 def test_normal_render_drives_panel_lifecycle():
-    captured = []
-
-    def _record_display(self, *args, **kwargs):
-        captured.append(self.calls[-1])  # latest call before display
-
-    # Hold a reference to the EPD instance the function constructs by capturing
-    # via a wrapper class attr.
-    instances = []
-    original_new = epd2in13b_V4.EPD.__new__
-
-    def _tracking_new(cls, *args, **kwargs):
-        inst = original_new(cls)
-        instances.append(inst)
-        return inst
-
-    epd2in13b_V4.EPD.__new__ = _tracking_new
-    try:
-        airQuality.display_air_quality(
-            _payload(), alert=False, trend_symbol="+", category="Good",
-            cat_color="black", city="Campbell",
-        )
-    finally:
-        epd2in13b_V4.EPD.__new__ = original_new
-
-    assert instances, "display_air_quality should have constructed an EPD"
-    calls = [c[0] for c in instances[0].calls]
+    airQuality.display_air_quality(
+        _payload(), alert=False, trend_symbol="+", category="Good",
+        cat_color="black", city="Campbell",
+    )
+    assert len(epd2in13b_V4.EPD.instances) == 1
+    calls = [c[0] for c in epd2in13b_V4.EPD.instances[0].calls]
     # init, Clear, two getbuffer (black + red), display, sleep
     assert calls == ["init", "Clear", "getbuffer", "getbuffer", "display", "sleep"]
 
 
-def test_init_minus_one_raises_but_still_sleeps():
-    epd2in13b_V4.EPD.init = lambda self: (self.calls.append(("init",)) or -1)
-
-    instances = []
-    original_new = epd2in13b_V4.EPD.__new__
-
-    def _tracking_new(cls, *args, **kwargs):
-        inst = original_new(cls)
-        instances.append(inst)
-        return inst
-
-    epd2in13b_V4.EPD.__new__ = _tracking_new
-    try:
-        with pytest.raises(RuntimeError, match="epd.init failed"):
-            airQuality.display_air_quality(
-                _payload(), alert=False, trend_symbol="+", category="Good",
-                cat_color="black", city="Campbell",
-            )
-    finally:
-        epd2in13b_V4.EPD.__new__ = original_new
-
+def test_init_minus_one_raises_but_still_sleeps(monkeypatch):
+    monkeypatch.setattr(
+        epd2in13b_V4.EPD, "init",
+        lambda self: (self.calls.append(("init",)) or -1),
+    )
+    with pytest.raises(RuntimeError, match="epd.init failed"):
+        airQuality.display_air_quality(
+            _payload(), alert=False, trend_symbol="+", category="Good",
+            cat_color="black", city="Campbell",
+        )
     # Panel sleep invariant: even on init failure, sleep still runs.
-    calls = [c[0] for c in instances[0].calls]
+    calls = [c[0] for c in epd2in13b_V4.EPD.instances[0].calls]
     assert calls == ["init", "sleep"]
 
 
@@ -90,7 +57,7 @@ def test_stuck_display_triggers_alarm_timeout(monkeypatch):
         self.calls.append(("display_hang",))
         time.sleep(5)  # > timeout
 
-    epd2in13b_V4.EPD.display = _hang
+    monkeypatch.setattr(epd2in13b_V4.EPD, "display", _hang)
 
     start = time.monotonic()
     with pytest.raises(TimeoutError):
@@ -101,10 +68,35 @@ def test_stuck_display_triggers_alarm_timeout(monkeypatch):
     elapsed = time.monotonic() - start
     # Should fire well before the 5s sleep would naturally finish.
     assert elapsed < 3.0
+    # And the panel-sleep invariant must still have run via the finally.
+    calls = [c[0] for c in epd2in13b_V4.EPD.instances[0].calls]
+    assert calls[-1] == "sleep"
+
+
+def test_stuck_sleep_is_also_fenced(monkeypatch):
+    """SR2 follow-up: SIGALRM is one-shot, so the finally re-arms its own
+    alarm. A hung `epd.sleep()` must still time out."""
+    monkeypatch.setattr(airQuality, "SLEEP_TIMEOUT_SEC", 1)
+
+    def _hang_sleep(self):
+        self.calls.append(("sleep_hang",))
+        time.sleep(5)
+
+    monkeypatch.setattr(epd2in13b_V4.EPD, "sleep", _hang_sleep)
+
+    start = time.monotonic()
+    # The TimeoutError from the second alarm bubbles out through the finally;
+    # display_air_quality logs it via log.exception in the wrapper. We expect
+    # the call to return within ~SLEEP_TIMEOUT_SEC, not hang for 5s.
+    airQuality.display_air_quality(
+        _payload(), alert=False, trend_symbol="-", category="Good",
+        cat_color="black", city="Campbell",
+    )
+    elapsed = time.monotonic() - start
+    assert elapsed < 3.0
 
 
 def test_stale_render_does_not_raise():
-    # Just confirm the [CACHED] branch executes cleanly with the same fake EPD.
     airQuality.display_air_quality(
         _payload(), alert=False, trend_symbol="?", category="Moderate",
         cat_color="black", city="Campbell", stale=True,
