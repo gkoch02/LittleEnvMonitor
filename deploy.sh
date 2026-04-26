@@ -1,7 +1,19 @@
 #!/bin/bash
 # Deploy LittleEnvMonitor on a fresh Raspberry Pi.
-# Run from the repo root: bash deploy.sh
+# Run from the repo root: bash deploy.sh [--check-api]
+#
+#   --check-api   After validating the config, hit the PurpleAir API once to
+#                 confirm the key and sensor_id actually work. Skipped by
+#                 default so offline installs still succeed.
 set -euo pipefail
+
+CHECK_API=0
+for arg in "$@"; do
+    case "$arg" in
+        --check-api) CHECK_API=1 ;;
+        *) echo "Unknown argument: $arg" >&2; exit 2 ;;
+    esac
+done
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUN_USER="${SUDO_USER:-$USER}"
@@ -9,6 +21,7 @@ RUN_GROUP="$(id -gn "$RUN_USER")"
 STATE_DIR="/var/lib/airquality"
 VENV_DIR="$REPO_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
+CONF_PATH="$REPO_DIR/airquality.conf"
 
 echo "==> Installing system packages..."
 sudo apt-get update -qq
@@ -32,18 +45,22 @@ if ! lsmod | grep -q spi_bcm2835; then
 fi
 
 echo "==> Checking config..."
-if [ ! -f "$REPO_DIR/airquality.conf" ]; then
-    cp "$REPO_DIR/airquality.conf.example" "$REPO_DIR/airquality.conf"
+if [ ! -f "$CONF_PATH" ]; then
+    cp "$REPO_DIR/airquality.conf.example" "$CONF_PATH"
     echo ""
     echo "  !! Created airquality.conf from example."
     echo "  !! Edit it now and add your PurpleAir API key and sensor ID:"
-    echo "  !!   nano $REPO_DIR/airquality.conf"
+    echo "  !!   nano $CONF_PATH"
     echo ""
     read -r -p "Press Enter once you've saved the config to continue..."
 fi
 
+# Tighten permissions before validation so we never leave a world-readable
+# secret behind, even if validation fails.
+chmod 600 "$CONF_PATH"
+
 # Validate config has real values before installing the timer.
-if ! "$VENV_PYTHON" - "$REPO_DIR/airquality.conf" <<'PY'
+if ! "$VENV_PYTHON" - "$CONF_PATH" <<'PY'
 import configparser, sys
 parser = configparser.ConfigParser()
 parser.read(sys.argv[1])
@@ -64,6 +81,21 @@ PY
 then
     echo "    airquality.conf is invalid — fix it and re-run deploy.sh." >&2
     exit 1
+fi
+
+if [ "$CHECK_API" -eq 1 ]; then
+    echo "==> Smoke-testing PurpleAir API..."
+    API_KEY="$(awk -F'= *' '/^api_key/ {print $2; exit}' "$CONF_PATH")"
+    SENSOR_ID="$(awk -F'= *' '/^sensor_id/ {print $2; exit}' "$CONF_PATH")"
+    if ! curl -fsS \
+            -H "X-API-Key: $API_KEY" \
+            "https://api.purpleair.com/v1/sensors/$SENSOR_ID?fields=pm2.5" \
+            -o /dev/null
+    then
+        echo "    PurpleAir API rejected the key/sensor pair — fix the config and retry." >&2
+        exit 1
+    fi
+    echo "    OK"
 fi
 
 echo "==> Preparing state directory $STATE_DIR..."

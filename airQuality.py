@@ -1,10 +1,13 @@
 import configparser
+import functools
 import json
 import logging
 import os
+import signal
 import sys
 import time
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, timezone
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
@@ -13,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from waveshare_epd import epd2in13b_V4
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(message)s",
 )
 log = logging.getLogger("airquality")
@@ -25,11 +28,18 @@ STATE_DIR = os.environ.get(
     os.environ.get("XDG_STATE_HOME", os.path.join(os.path.expanduser("~"), ".local", "state")),
 )
 CACHE_PATH = os.path.join(STATE_DIR, "airquality", "last_reading.json")
+HEARTBEAT_PATH = os.path.join(STATE_DIR, "airquality", "heartbeat")
 
 FONT_PATH_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
+USER_AGENT = "LittleEnvMonitor/1.0"
+
 # PM2.5 µg/m³ change required before flagging "AQI Rising!"
 TREND_THRESHOLD = 5.0
+
+# Hard ceiling on the e-ink draw call — the vendored busy-wait has no timeout
+# of its own, so we fence it here to stay inside systemd's TimeoutStartSec.
+DISPLAY_TIMEOUT_SEC = 60
 
 
 def load_config(path):
@@ -41,12 +51,19 @@ def load_config(path):
     parser = configparser.ConfigParser()
     parser.read(path)
     try:
-        api_key = parser["purpleair"]["api_key"].strip()
+        # Env var wins over the config file so the systemd unit can ship the
+        # secret via EnvironmentFile= (mode 0600) instead of the repo dir.
+        api_key = (
+            os.environ.get("PURPLEAIR_API_KEY")
+            or parser["purpleair"]["api_key"]
+        ).strip()
         sensor_id = int(parser["purpleair"]["sensor_id"])
     except (KeyError, ValueError) as e:
-        raise SystemExit(f"Invalid config at {path}: {e}")
+        raise SystemExit(f"Invalid config at {path}: {e}") from e
     if not api_key or api_key == "YOUR_PURPLEAIR_API_KEY":
-        raise SystemExit(f"Set a real api_key in {path}")
+        raise SystemExit(f"Set a real api_key in {path} or PURPLEAIR_API_KEY")
+    if sensor_id <= 0:
+        raise SystemExit(f"Invalid sensor_id in {path}: must be a positive integer")
 
     weather_coords = None
     if parser.has_section("weather"):
@@ -54,12 +71,40 @@ def load_config(path):
             lat = float(parser["weather"]["latitude"])
             lon = float(parser["weather"]["longitude"])
         except (KeyError, ValueError) as e:
-            raise SystemExit(f"Invalid [weather] section in {path}: {e}")
+            raise SystemExit(f"Invalid [weather] section in {path}: {e}") from e
+        if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+            raise SystemExit(
+                f"Invalid [weather] coordinates in {path}: "
+                f"latitude must be in [-90, 90] and longitude in [-180, 180]"
+            )
         weather_coords = (lat, lon)
 
     city = parser.get("display", "city", fallback="Campbell").strip() or "Campbell"
 
     return api_key, sensor_id, weather_coords, city
+
+
+@functools.lru_cache(maxsize=1)
+def _http_session():
+    """Module-level requests.Session, reused across PurpleAir + Open-Meteo.
+
+    Saves a TLS handshake per call — meaningful on a Pi Zero. Lazily built so
+    `import airQuality` stays cheap and so tests that patch `requests.get` keep
+    working unchanged.
+    """
+    session = requests.Session()
+    session.headers["User-Agent"] = USER_AGENT
+    return session
+
+
+@functools.lru_cache(maxsize=8)
+def _load_font(size):
+    """Cache TrueType fonts at module level — they're identical every render."""
+    try:
+        return ImageFont.truetype(FONT_PATH_BOLD, size)
+    except OSError:
+        log.warning("Font %s missing; falling back to PIL default", FONT_PATH_BOLD)
+        return ImageFont.load_default()
 
 
 def classify_aqi(pm25):
@@ -76,26 +121,38 @@ def classify_aqi(pm25):
     return "Hazardous", "red"
 
 
-def fetch_purpleair_data(sensor_id, api_key, retries=3, delay=10, timeout=15):
+def fetch_purpleair_data(sensor_id, api_key, retries=3, timeout=15):
     url = f"https://api.purpleair.com/v1/sensors/{sensor_id}"
     headers = {"X-API-Key": api_key}
     fields = ["pm2.5", "pm10.0", "humidity", "temperature", "last_seen"]
     full_url = f"{url}?fields={','.join(fields)}"
 
-    last_err = None
+    last_err: Exception | None = None
     for attempt in range(1, retries + 1):
+        retry_after = None
         try:
-            response = requests.get(full_url, headers=headers, timeout=timeout)
+            response = _http_session().get(full_url, headers=headers, timeout=timeout)
         except (requests.Timeout, requests.ConnectionError) as e:
             last_err = e
             log.warning("Attempt %d/%d network error: %s", attempt, retries, e)
         else:
             # Don't retry client errors (bad key, bad sensor id) — they won't fix themselves.
-            if 400 <= response.status_code < 500:
+            # 429 is the one 4xx exception: it's a transient rate limit, so respect Retry-After.
+            if response.status_code == 429:
+                last_err = RuntimeError("HTTP 429 rate limited")
+                try:
+                    retry_after = int(response.headers.get("Retry-After", "0")) or None
+                except ValueError:
+                    retry_after = None
+                log.warning(
+                    "Attempt %d/%d rate limited (Retry-After=%s)",
+                    attempt, retries, retry_after,
+                )
+            elif 400 <= response.status_code < 500:
                 raise RuntimeError(
                     f"PurpleAir API returned {response.status_code}: {response.text[:200]}"
                 )
-            if response.status_code >= 500:
+            elif response.status_code >= 500:
                 last_err = RuntimeError(f"HTTP {response.status_code}")
                 log.warning("Attempt %d/%d server error: %s", attempt, retries, last_err)
             else:
@@ -113,7 +170,10 @@ def fetch_purpleair_data(sensor_id, api_key, retries=3, delay=10, timeout=15):
                     ),
                 }
         if attempt < retries:
-            time.sleep(delay)
+            # Exponential backoff: 2s, 4s, 8s (cap 8s). 429 honors Retry-After if present.
+            sleep_for = retry_after if retry_after is not None else min(2 ** attempt, 8)
+            time.sleep(sleep_for)
+    assert last_err is not None  # all loop paths set last_err before continuing
     raise last_err
 
 
@@ -129,7 +189,7 @@ def fetch_local_weather(latitude, longitude, timeout=10):
         "&current=temperature_2m,relative_humidity_2m"
         "&temperature_unit=fahrenheit"
     )
-    response = requests.get(url, timeout=timeout)
+    response = _http_session().get(url, timeout=timeout)
     response.raise_for_status()
     current = response.json().get("current") or {}
     temp = current.get("temperature_2m")
@@ -144,6 +204,26 @@ def _is_missing(value):
     return value is None or value == "N/A"
 
 
+@contextmanager
+def _alarm(seconds):
+    """SIGALRM-based timeout fence around a blocking call.
+
+    The vendored waveshare busy-wait has no timeout of its own, so this is the
+    one knob that keeps a stuck panel from eating the whole 120s systemd budget.
+    POSIX-only — fine for the systemd unit.
+    """
+    def _handler(signum, frame):
+        raise TimeoutError(f"timed out after {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def write_cache(data):
     os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
     tmp = CACHE_PATH + ".tmp"
@@ -154,21 +234,38 @@ def write_cache(data):
 
 def read_cache():
     try:
-        with open(CACHE_PATH, "r") as f:
+        with open(CACHE_PATH) as f:
             return json.load(f)
     except (OSError, ValueError):
         return None
 
 
+def write_heartbeat():
+    """Atomically write the current UTC time to the heartbeat file.
+
+    Only called on the fully-successful path so external monitors can tell
+    a healthy unit from one that is silently stuck in cache fallback.
+    """
+    os.makedirs(os.path.dirname(HEARTBEAT_PATH), exist_ok=True)
+    tmp = HEARTBEAT_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(datetime.now(timezone.utc).isoformat())
+    os.replace(tmp, HEARTBEAT_PATH)
+
+
 def display_air_quality(data, alert, trend_symbol, category, cat_color, city, stale=False):
     epd = epd2in13b_V4.EPD()
     try:
-        epd.init()
+        # Vendored waveshare returns -1 from init() on SPI/GPIO failure rather
+        # than raising — surface it explicitly so the cache-fallback branch in
+        # main() can take over.
+        if epd.init() == -1:
+            raise RuntimeError("epd.init failed (SPI/GPIO unavailable)")
         epd.Clear()
 
-        font_large = ImageFont.truetype(FONT_PATH_BOLD, 18)
-        font_small = ImageFont.truetype(FONT_PATH_BOLD, 16)
-        font_xsmall = ImageFont.truetype(FONT_PATH_BOLD, 12)
+        font_large = _load_font(18)
+        font_small = _load_font(16)
+        font_xsmall = _load_font(12)
 
         width, height = epd.height, epd.width
         image_black = Image.new("1", (width, height), 255)
@@ -228,7 +325,8 @@ def display_air_quality(data, alert, trend_symbol, category, cat_color, city, st
         image_black = image_black.rotate(180)
         image_red = image_red.rotate(180)
 
-        epd.display(epd.getbuffer(image_black), epd.getbuffer(image_red))
+        with _alarm(DISPLAY_TIMEOUT_SEC):
+            epd.display(epd.getbuffer(image_black), epd.getbuffer(image_red))
     finally:
         # Always sleep the panel; leaving it powered shortens its life.
         try:
@@ -237,8 +335,16 @@ def display_air_quality(data, alert, trend_symbol, category, cat_color, city, st
             log.exception("Failed to put e-ink panel to sleep")
 
 
+def _summary(branch, pm25=None, rising=None, source=None):
+    log.info(
+        "summary path=%s pm25=%s rising=%s source=%s",
+        branch, pm25, rising, source,
+    )
+
+
 def main():
     api_key, sensor_id, weather_coords, city = load_config(CONF_PATH)
+    source = "purpleair"
     try:
         data = fetch_purpleair_data(sensor_id, api_key)
         if _is_missing(data["Temp"]) or _is_missing(data["Humidity"]):
@@ -249,6 +355,7 @@ def main():
                         data["Temp"] = weather["Temp"]
                     if _is_missing(data["Humidity"]):
                         data["Humidity"] = weather["Humidity"]
+                    source = "purpleair+openmeteo"
                 except Exception:
                     log.exception("Local weather fallback failed")
             else:
@@ -268,22 +375,27 @@ def main():
         category, cat_color = classify_aqi(current_pm25)
         display_air_quality(data, rising, trend_symbol, category, cat_color, city)
         write_cache(data)
+        write_heartbeat()
+        _summary("live", pm25=current_pm25, rising=rising, source=source)
         return 0
     except Exception:
         log.exception("Live fetch/display failed; trying cache")
         cached = read_cache()
         if not cached:
+            _summary("fail", source=source)
             return 1
         try:
             pm25 = float(cached["PM2.5"])
         except (KeyError, TypeError, ValueError):
             log.error("Cached reading is unusable")
+            _summary("fail", source=source)
             return 1
         category, cat_color = classify_aqi(pm25)
         try:
             display_air_quality(cached, False, "?", category, cat_color, city, stale=True)
         except Exception:
             log.exception("Failed to display cached data")
+        _summary("cache_fallback", pm25=pm25, source=source)
         return 1
 
 

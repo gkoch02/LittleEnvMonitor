@@ -114,3 +114,75 @@ def test_display_city_blank_falls_back_to_default(tmp_path):
     )
     _, _, _, city = airQuality.load_config(str(conf))
     assert city == "Campbell"
+
+
+def test_zero_sensor_id_raises(tmp_path):
+    conf = tmp_path / "airquality.conf"
+    conf.write_text("[purpleair]\napi_key = real-key\nsensor_id = 0\n")
+    with pytest.raises(SystemExit, match="sensor_id"):
+        airQuality.load_config(str(conf))
+
+
+def test_negative_sensor_id_raises(tmp_path):
+    conf = tmp_path / "airquality.conf"
+    conf.write_text("[purpleair]\napi_key = real-key\nsensor_id = -3\n")
+    with pytest.raises(SystemExit, match="sensor_id"):
+        airQuality.load_config(str(conf))
+
+
+@pytest.mark.parametrize(
+    "lat,lon",
+    [(91.0, 0.0), (-90.5, 0.0), (0.0, 181.0), (0.0, -181.0)],
+)
+def test_weather_coords_out_of_range_raises(tmp_path, lat, lon):
+    conf = tmp_path / "airquality.conf"
+    conf.write_text(
+        "[purpleair]\napi_key = real-key\nsensor_id = 1\n"
+        f"[weather]\nlatitude = {lat}\nlongitude = {lon}\n"
+    )
+    with pytest.raises(SystemExit, match="coordinates"):
+        airQuality.load_config(str(conf))
+
+
+@pytest.mark.parametrize(
+    "lat,lon",
+    [(90.0, 180.0), (-90.0, -180.0), (0.0, 0.0)],
+)
+def test_weather_coords_at_boundaries_accepted(tmp_path, lat, lon):
+    conf = tmp_path / "airquality.conf"
+    conf.write_text(
+        "[purpleair]\napi_key = real-key\nsensor_id = 1\n"
+        f"[weather]\nlatitude = {lat}\nlongitude = {lon}\n"
+    )
+    _, _, weather, _ = airQuality.load_config(str(conf))
+    assert weather == (lat, lon)
+
+
+def test_env_var_overrides_config_api_key(tmp_path, monkeypatch):
+    conf = tmp_path / "airquality.conf"
+    conf.write_text(
+        "[purpleair]\napi_key = file-key\nsensor_id = 1\n"
+    )
+    monkeypatch.setenv("PURPLEAIR_API_KEY", "env-key")
+    api_key, _, _, _ = airQuality.load_config(str(conf))
+    assert api_key == "env-key"
+
+
+def test_env_var_used_when_config_has_placeholder(tmp_path, monkeypatch):
+    conf = tmp_path / "airquality.conf"
+    conf.write_text(
+        "[purpleair]\napi_key = YOUR_PURPLEAIR_API_KEY\nsensor_id = 1\n"
+    )
+    monkeypatch.setenv("PURPLEAIR_API_KEY", "env-key")
+    api_key, _, _, _ = airQuality.load_config(str(conf))
+    assert api_key == "env-key"
+
+
+def test_env_var_blank_falls_back_to_config(tmp_path, monkeypatch):
+    conf = tmp_path / "airquality.conf"
+    conf.write_text(
+        "[purpleair]\napi_key = file-key\nsensor_id = 1\n"
+    )
+    monkeypatch.setenv("PURPLEAIR_API_KEY", "")
+    api_key, _, _, _ = airQuality.load_config(str(conf))
+    assert api_key == "file-key"
