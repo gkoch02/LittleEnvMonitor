@@ -59,24 +59,30 @@ fi
 # secret behind, even if validation fails.
 chmod 600 "$CONF_PATH"
 
-# Validate config has real values before installing the timer.
+# Validate config has real values before installing the timer. Mirrors the
+# runtime load_config() rules: PURPLEAIR_API_KEY env var wins over the file,
+# and sensor_id must be a positive integer.
 if ! "$VENV_PYTHON" - "$CONF_PATH" <<'PY'
-import configparser, sys
+import configparser, os, sys
 parser = configparser.ConfigParser()
 parser.read(sys.argv[1])
 try:
-    api_key = parser["purpleair"]["api_key"].strip()
+    file_key = parser["purpleair"]["api_key"].strip()
     sensor_id = parser["purpleair"]["sensor_id"].strip()
 except KeyError as e:
     sys.exit(f"missing key: {e}")
+env_key = (os.environ.get("PURPLEAIR_API_KEY") or "").strip()
+api_key = env_key or file_key
 if not api_key or api_key == "YOUR_PURPLEAIR_API_KEY":
-    sys.exit("api_key is not set")
+    sys.exit("api_key is not set (in airquality.conf or PURPLEAIR_API_KEY)")
 if not sensor_id or sensor_id == "YOUR_SENSOR_ID":
     sys.exit("sensor_id is not set")
 try:
-    int(sensor_id)
+    sid = int(sensor_id)
 except ValueError:
     sys.exit("sensor_id must be an integer")
+if sid <= 0:
+    sys.exit("sensor_id must be a positive integer")
 PY
 then
     echo "    airquality.conf is invalid — fix it and re-run deploy.sh." >&2
@@ -85,7 +91,9 @@ fi
 
 if [ "$CHECK_API" -eq 1 ]; then
     echo "==> Smoke-testing PurpleAir API..."
-    API_KEY="$(awk -F'= *' '/^api_key/ {print $2; exit}' "$CONF_PATH")"
+    # Prefer the env var so the placeholder-in-file + EnvironmentFile workflow
+    # still gets a real connectivity check.
+    API_KEY="${PURPLEAIR_API_KEY:-$(awk -F'= *' '/^api_key/ {print $2; exit}' "$CONF_PATH")}"
     SENSOR_ID="$(awk -F'= *' '/^sensor_id/ {print $2; exit}' "$CONF_PATH")"
     if ! curl -fsS \
             -H "X-API-Key: $API_KEY" \
