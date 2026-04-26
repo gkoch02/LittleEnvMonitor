@@ -1,4 +1,7 @@
 [purpleair]
+# api_key can also be supplied via the PURPLEAIR_API_KEY environment variable,
+# which takes precedence over this file. Useful for keeping the secret out of
+# the repo dir — e.g. systemd EnvironmentFile= pointing at a 0600 file.
 api_key = YOUR_PURPLEAIR_API_KEY
 sensor_id = YOUR_SENSOR_ID
 

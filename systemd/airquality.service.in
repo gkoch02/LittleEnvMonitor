@@ -25,6 +25,14 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 ReadWritePaths=@STATE_DIR@
+# Defense-in-depth: cap memory so a Pillow/requests leak can't OOM the Pi,
+# constrain the personality (no 32-bit on 64-bit Pi etc.), and only allow
+# the address families we actually use. AF_NETLINK stays for sysfs-backed
+# SPI/GPIO to keep working — drop it if you confirm your hardware path
+# doesn't touch netlink.
+MemoryMax=128M
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 StandardOutput=journal
 StandardError=journal

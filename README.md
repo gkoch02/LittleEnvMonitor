@@ -19,7 +19,7 @@ Pulls PM2.5, PM10, temperature, and humidity from a [PurpleAir](https://www2.pur
 - **Header (red).** Shows one of three things, in priority order:
   - `"Air Quality [CACHED]"` — when the live fetch failed and the reading came from disk.
   - `"AQI Rising!"` — when PM2.5 has climbed by at least `TREND_THRESHOLD` µg/m³ since the previous reading.
-  - The location label otherwise. This is hardcoded as `"Air Quality - Campbell"` in `airQuality.py`; change the string for your own location.
+  - The location label otherwise (`"Air Quality - <city>"`). The city comes from `[display] city` in `airquality.conf` and defaults to `Campbell`.
 - **Body (black).** PM2.5 with a `+`/`-` trend marker, PM10, AQI category, temperature, and humidity.
 - **AQI category (red)** when the category is "Unhealthy for Sensitive Groups" or worse (PM2.5 > 35.4 µg/m³); otherwise black.
 - **Timestamp (red, bottom-right)** — the time of the last update.
@@ -61,10 +61,20 @@ api_key = YOUR_PURPLEAIR_API_KEY
 sensor_id = YOUR_SENSOR_ID
 ```
 
-- **`api_key`** — request one at [api.purpleair.com](https://api.purpleair.com) (PurpleAir issues a read key and a write key; this script only needs the read key).
+- **`api_key`** — request one at [api.purpleair.com](https://api.purpleair.com) (PurpleAir issues a read key and a write key; this script only needs the read key). Can also be set via the `PURPLEAIR_API_KEY` env var, which wins over the file. Use the env var path with `EnvironmentFile=` (mode 0600) when you'd rather not keep the secret in the repo dir.
 - **`sensor_id`** — the integer that appears in the PurpleAir map URL when you click your sensor.
 
 `airquality.conf` is gitignored, so your key won't be committed.
+
+### Logging level
+
+`LOG_LEVEL` (env var, default `INFO`) — set to `DEBUG` in a systemd drop-in to crank up verbosity without editing the script.
+
+### Heartbeat / external monitoring
+
+On each fully-successful run the script atomically writes a UTC ISO-8601 timestamp to `$AIRQUALITY_STATE_DIR/airquality/heartbeat`. It is **not** updated on the cache-fallback path, so an external monitor (a cron job, Healthchecks.io, etc.) can alert when the file goes stale — catching "silently stuck in cache fallback" failures that exit codes alone won't surface.
+
+The timer only fires between 08:00 and 21:30, so the heartbeat will naturally go ~10.5 hours stale overnight. Tune your alert threshold to "stale during the day" (e.g. mtime > 60 min old AND local time is within the run window), or alert only after sunrise on the first miss.
 
 ## Schedule
 

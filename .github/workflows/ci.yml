@@ -29,5 +29,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
+      - name: Lint (ruff)
+        run: python -m ruff check .
+
+      - name: Type check (mypy)
+        run: python -m mypy airQuality.py
+
       - name: Run tests
-        run: python -m pytest -v
+        run: python -m pytest
