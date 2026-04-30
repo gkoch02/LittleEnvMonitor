@@ -34,9 +34,28 @@ def test_above_top_breakpoint_clamps_to_500():
     assert pm25_to_aqi(750.0) == 500
 
 
-@pytest.mark.parametrize("bad", [-0.1, -1, "N/A", None, "junk"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        -0.1,
+        -1,
+        "N/A",
+        None,
+        "junk",
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+    ],
+)
 def test_invalid_input_returns_none(bad):
     assert pm25_to_aqi(bad) is None
+
+
+def test_truncates_per_epa_spec_not_rounds():
+    """EPA App. G says truncate, not round. 12.05 must map to 12.0 → AQI 50,
+    not 12.1 → AQI 51 (which is what `round(12.05, 1)` would give)."""
+    assert pm25_to_aqi(12.05) == 50
+    assert pm25_to_aqi(35.45) == 100
 
 
 def test_string_numeric_input_is_accepted():

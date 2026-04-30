@@ -3,6 +3,7 @@ import configparser
 import functools
 import json
 import logging
+import math
 import os
 import signal
 import sys
@@ -152,15 +153,21 @@ def classify_aqi(pm25):
 def pm25_to_aqi(pm25):
     """EPA PM2.5 (µg/m³) → integer AQI via piecewise-linear interpolation.
 
-    Returns None for invalid input (negative, non-numeric). Values above the
-    top breakpoint (500.4 µg/m³) are clamped to 500 — EPA's top-of-scale.
+    Returns None for invalid input (NaN, infinite, negative, non-numeric).
+    Values above the top breakpoint (500.4 µg/m³) are clamped to 500 — EPA's
+    top-of-scale.
     """
     try:
-        c = round(float(pm25), 1)
+        c = float(pm25)
     except (TypeError, ValueError):
         return None
-    if c < 0:
+    if not math.isfinite(c) or c < 0:
         return None
+    # EPA spec (40 CFR Part 58 App. G) is "truncate to one decimal place,"
+    # not round. For real PurpleAir readings (already 1-decimal) it doesn't
+    # matter, but matching the spec keeps us aligned with the EPA's reference
+    # AQI calculator at boundaries like 12.05.
+    c = int(c * 10) / 10
     for pm_lo, pm_hi, aqi_lo, aqi_hi in _PM25_AQI_BREAKPOINTS:
         if pm_lo <= c <= pm_hi:
             return round((aqi_hi - aqi_lo) / (pm_hi - pm_lo) * (c - pm_lo) + aqi_lo)
@@ -429,20 +436,23 @@ def render_preview_png(
     """Composite the panel layout into an upscaled RGB PNG. No hardware needed.
 
     Used by `--dry-run` for end-to-end smoke testing on dev boxes, and by
-    `docs/generate_preview.py` to refresh the README screenshot.
+    `docs/generate_preview.py` to refresh the README screenshot. Creates any
+    missing parent directories so a path like `/tmp/previews/foo.png` works
+    on first run.
     """
     image_black, image_red = _render_panel_images(
         data, alert, trend_symbol, aqi_value, category, cat_color, city, stale,
     )
     width, height = PANEL_WIDTH, PANEL_HEIGHT
     preview = Image.new("RGB", (width, height), (250, 250, 250))
-    # PIL.Image.load() returns Optional in mypy stubs but is non-None for any
-    # image we've actually constructed; assert so the type narrows for the
-    # tight pixel loop below.
+    # PIL.Image.load() is typed Optional in the stubs but is only None on a
+    # closed/invalid image. Bail explicitly so this survives `python -O`
+    # (which strips `assert`) and gives a clear error if PIL ever changes.
     px = preview.load()
     rb = image_red.load()
     bb = image_black.load()
-    assert px is not None and rb is not None and bb is not None
+    if px is None or rb is None or bb is None:
+        raise RuntimeError("PIL.Image.load() returned None — image is invalid")
     # Black wins overlaps, mirroring how the actual panel renders the two
     # buffers — red pixels show through only where black is unset.
     for j in range(height):
@@ -455,6 +465,9 @@ def render_preview_png(
         preview = preview.resize(
             (width * scale, height * scale), Image.Resampling.NEAREST,
         )
+    parent = os.path.dirname(out_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     preview.save(out_path)
     return out_path
 

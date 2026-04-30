@@ -75,6 +75,10 @@ def test_live_success_writes_cache_and_heartbeat(state_dir, conf, display_record
     assert len(display_recorder) == 1
     assert display_recorder[0]["stale"] is False
     assert display_recorder[0]["alert"] is False  # no prior cache → no rising banner
+    # AQI threading: PM2.5=20.0 should land in the Moderate band (51-100).
+    assert display_recorder[0]["aqi_value"] == airQuality.pm25_to_aqi(20.0)
+    assert 51 <= display_recorder[0]["aqi_value"] <= 100
+    assert display_recorder[0]["category"] == "Moderate"
     cached = json.loads((state_dir / "airquality" / "last_reading.json").read_text())
     assert cached["PM2.5"] == 20.0
     assert (state_dir / "airquality" / "heartbeat").is_file()

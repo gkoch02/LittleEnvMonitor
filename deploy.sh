@@ -130,19 +130,23 @@ echo "==> Triggering an initial run to verify the install..."
 # enabled SPI bus that needs a reboot would surface as Result=exit-code, and
 # the timer will retry on the next tick. Surface the outcome + recent journal
 # lines so the operator can tell which case they're in.
-sudo systemctl start airquality.service || true
+START_RC=0
+sudo systemctl start airquality.service || START_RC=$?
 RESULT="$(systemctl show airquality.service --property=Result --value 2>/dev/null || echo unknown)"
 EXIT_CODE="$(systemctl show airquality.service --property=ExecMainStatus --value 2>/dev/null || echo '?')"
-case "$RESULT" in
-    success)
-        echo "    Initial run OK (Result=success, ExecMainStatus=$EXIT_CODE)."
-        ;;
-    *)
-        echo "    Initial run did not finish cleanly (Result=$RESULT, ExecMainStatus=$EXIT_CODE)."
-        echo "    Common causes: SPI was just enabled and needs a reboot; PurpleAir is briefly unreachable;"
-        echo "    the e-ink ribbon is loose. The timer will retry every 30 minutes."
-        ;;
-esac
+EXIT_TS="$(systemctl show airquality.service --property=ExecMainExitTimestampMonotonic --value 2>/dev/null || echo 0)"
+# Only trust Result=success if `systemctl start` actually succeeded AND the
+# unit has a recorded exit timestamp — otherwise Result is just the default
+# value for a unit that never ran (e.g. if start was rejected by polkit).
+if [ "$START_RC" -eq 0 ] && [ "$RESULT" = "success" ] && [ "$EXIT_TS" != "0" ]; then
+    echo "    Initial run OK (Result=success, ExecMainStatus=$EXIT_CODE)."
+elif [ "$START_RC" -ne 0 ]; then
+    echo "    'systemctl start' itself failed (rc=$START_RC). Check 'systemctl status airquality.service'." >&2
+else
+    echo "    Initial run did not finish cleanly (Result=$RESULT, ExecMainStatus=$EXIT_CODE)."
+    echo "    Common causes: SPI was just enabled and needs a reboot; PurpleAir is briefly unreachable;"
+    echo "    the e-ink ribbon is loose. The timer will retry every 30 minutes."
+fi
 echo ""
 echo "Recent service log:"
 journalctl -u airquality.service --no-pager -n 20 || true
