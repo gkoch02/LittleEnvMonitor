@@ -137,17 +137,49 @@ def _load_font(size):
 
 
 def classify_aqi(pm25):
-    if pm25 <= 12:
+    """Return (category, ink_color) for a PM2.5 reading.
+
+    Truncates the input to one decimal per EPA spec before band lookup so the
+    category always agrees with `pm25_to_aqi(pm25)` on inputs like 12.09 (where
+    rounding/truncation flips the band). For invalid input (NaN, infinite,
+    negative, non-numeric) returns ("Unknown", "black") — pairs with
+    `pm25_to_aqi` returning None on the same inputs so the display can render
+    a sensible degraded state instead of contradictory text.
+    """
+    c = _truncate_pm25(pm25)
+    if c is None:
+        return "Unknown", "black"
+    if c <= 12:
         return "Good", "black"
-    if pm25 <= 35.4:
+    if c <= 35.4:
         return "Moderate", "black"
-    if pm25 <= 55.4:
+    if c <= 55.4:
         return "Unhealthy for Sensitive Groups", "red"
-    if pm25 <= 150.4:
+    if c <= 150.4:
         return "Unhealthy", "red"
-    if pm25 <= 250.4:
+    if c <= 250.4:
         return "Very Unhealthy", "red"
     return "Hazardous", "red"
+
+
+def _truncate_pm25(pm25):
+    """EPA-spec normalization: truncate to one decimal, reject invalid input.
+
+    Single source of truth for both `pm25_to_aqi` and `classify_aqi` so the
+    numeric AQI and the category label can never disagree on which band a
+    reading falls into. Returns None for NaN, infinite, negative, or
+    non-numeric input.
+    """
+    try:
+        c = float(pm25)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(c) or c < 0:
+        return None
+    # EPA spec (40 CFR Part 58 App. G) is "truncate to one decimal place,"
+    # not round. Matches the EPA reference AQI calculator at boundaries
+    # like 12.05.
+    return int(c * 10) / 10
 
 
 def pm25_to_aqi(pm25):
@@ -157,17 +189,9 @@ def pm25_to_aqi(pm25):
     Values above the top breakpoint (500.4 µg/m³) are clamped to 500 — EPA's
     top-of-scale.
     """
-    try:
-        c = float(pm25)
-    except (TypeError, ValueError):
+    c = _truncate_pm25(pm25)
+    if c is None:
         return None
-    if not math.isfinite(c) or c < 0:
-        return None
-    # EPA spec (40 CFR Part 58 App. G) is "truncate to one decimal place,"
-    # not round. For real PurpleAir readings (already 1-decimal) it doesn't
-    # matter, but matching the spec keeps us aligned with the EPA's reference
-    # AQI calculator at boundaries like 12.05.
-    c = int(c * 10) / 10
     for pm_lo, pm_hi, aqi_lo, aqi_hi in _PM25_AQI_BREAKPOINTS:
         if pm_lo <= c <= pm_hi:
             return round((aqi_hi - aqi_lo) / (pm_hi - pm_lo) * (c - pm_lo) + aqi_lo)
