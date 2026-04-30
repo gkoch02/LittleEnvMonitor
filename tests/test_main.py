@@ -38,11 +38,14 @@ def display_recorder(monkeypatch):
     """Replace display_air_quality with a recorder so tests can assert what got drawn."""
     calls = []
 
-    def _record(data, alert, trend_symbol, category, cat_color, city, stale=False):
+    def _record(
+        data, alert, trend_symbol, aqi_value, category, cat_color, city, stale=False,
+    ):
         calls.append({
             "data": dict(data),
             "alert": alert,
             "trend_symbol": trend_symbol,
+            "aqi_value": aqi_value,
             "category": category,
             "cat_color": cat_color,
             "city": city,
@@ -72,6 +75,10 @@ def test_live_success_writes_cache_and_heartbeat(state_dir, conf, display_record
     assert len(display_recorder) == 1
     assert display_recorder[0]["stale"] is False
     assert display_recorder[0]["alert"] is False  # no prior cache → no rising banner
+    # AQI threading: PM2.5=20.0 should land in the Moderate band (51-100).
+    assert display_recorder[0]["aqi_value"] == airQuality.pm25_to_aqi(20.0)
+    assert 51 <= display_recorder[0]["aqi_value"] <= 100
+    assert display_recorder[0]["category"] == "Moderate"
     cached = json.loads((state_dir / "airquality" / "last_reading.json").read_text())
     assert cached["PM2.5"] == 20.0
     assert (state_dir / "airquality" / "heartbeat").is_file()

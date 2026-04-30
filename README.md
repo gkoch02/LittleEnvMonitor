@@ -22,8 +22,8 @@ Pulls PM2.5, PM10, temperature, and humidity from a [PurpleAir](https://www2.pur
   - `"Air Quality [CACHED]"` — when the live fetch failed and the reading came from disk.
   - `"AQI Rising!"` — when PM2.5 has climbed by at least `TREND_THRESHOLD` µg/m³ since the previous reading.
   - The location label otherwise (`"Air Quality - <city>"`). The city comes from `[display] city` in `airquality.conf` and defaults to `Campbell`.
-- **Body (black).** PM2.5 with a `+`/`-` trend marker, PM10, AQI category, temperature, and humidity.
-- **AQI category (red)** when the category is "Unhealthy for Sensitive Groups" or worse (PM2.5 > 35.4 µg/m³); otherwise black.
+- **Body (black).** PM2.5 with a `+`/`-` trend marker, PM10, AQI (numeric value plus category, e.g. `AQI: 75 (Moderate)`), temperature, and humidity. The numeric AQI uses EPA's piecewise-linear PM2.5 → AQI conversion.
+- **AQI line (red)** when the category is "Unhealthy for Sensitive Groups" or worse (PM2.5 > 35.4 µg/m³); otherwise black.
 - **Timestamp (red, bottom-right)** — the time of the last update.
 
 ## Rebuilding from scratch
@@ -96,9 +96,20 @@ systemctl status airquality.timer
 systemctl list-timers airquality.timer
 ```
 
+## Dry-run preview
+
+To sanity-check a layout change (or just see what the panel would show) without e-ink hardware, run with `--dry-run`. It fetches real PurpleAir data, runs the same trend / AQI / category logic, and writes a PNG instead of pushing to the panel. Cache and heartbeat are left untouched.
+
+```bash
+.venv/bin/python airQuality.py --dry-run                  # ./airquality-preview.png
+.venv/bin/python airQuality.py --dry-run /tmp/preview.png # custom path
+```
+
+If PurpleAir is unreachable in `--dry-run`, the script exits 1 instead of rendering `[CACHED]` — the operator asked for a fresh preview, not a stale one.
+
 ## Tests
 
-The test suite covers the platform-independent code paths (AQI classification, config parsing, PurpleAir HTTP client with retry logic, and the JSON cache); the e-ink display path is excluded because it requires Pi hardware. Tests run on any machine — no `RPi.GPIO`/`spidev` needed.
+The test suite covers the platform-independent code paths (AQI classification, EPA PM2.5 → AQI conversion, config parsing, PurpleAir HTTP client with retry logic, Open-Meteo fallback, the JSON cache, the `--dry-run` PNG path, and the orchestration in `main()`); the e-ink draw is exercised against a fake EPD stub. Tests run on any machine — no `RPi.GPIO`/`spidev` needed.
 
 ```bash
 python -m pip install -r requirements-dev.txt

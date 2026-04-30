@@ -26,7 +26,7 @@ def _clear_epd_instances():
 
 def test_normal_render_drives_panel_lifecycle():
     airQuality.display_air_quality(
-        _payload(), alert=False, trend_symbol="+", category="Good",
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
         cat_color="black", city="Campbell",
     )
     assert len(epd2in13b_V4.EPD.instances) == 1
@@ -42,7 +42,7 @@ def test_init_minus_one_raises_but_still_sleeps(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="epd.init failed"):
         airQuality.display_air_quality(
-            _payload(), alert=False, trend_symbol="+", category="Good",
+            _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
             cat_color="black", city="Campbell",
         )
     # Panel sleep invariant: even on init failure, sleep still runs.
@@ -62,7 +62,7 @@ def test_stuck_display_triggers_alarm_timeout(monkeypatch):
     start = time.monotonic()
     with pytest.raises(TimeoutError):
         airQuality.display_air_quality(
-            _payload(), alert=False, trend_symbol="-", category="Good",
+            _payload(), alert=False, trend_symbol="-", aqi_value=50, category="Good",
             cat_color="black", city="Campbell",
         )
     elapsed = time.monotonic() - start
@@ -89,7 +89,7 @@ def test_stuck_sleep_is_also_fenced(monkeypatch):
     # display_air_quality logs it via log.exception in the wrapper. We expect
     # the call to return within ~SLEEP_TIMEOUT_SEC, not hang for 5s.
     airQuality.display_air_quality(
-        _payload(), alert=False, trend_symbol="-", category="Good",
+        _payload(), alert=False, trend_symbol="-", aqi_value=50, category="Good",
         cat_color="black", city="Campbell",
     )
     elapsed = time.monotonic() - start
@@ -98,13 +98,21 @@ def test_stuck_sleep_is_also_fenced(monkeypatch):
 
 def test_stale_render_does_not_raise():
     airQuality.display_air_quality(
-        _payload(), alert=False, trend_symbol="?", category="Moderate",
+        _payload(), alert=False, trend_symbol="?", aqi_value=75, category="Moderate",
         cat_color="black", city="Campbell", stale=True,
     )
 
 
 def test_alert_render_does_not_raise():
     airQuality.display_air_quality(
-        _payload(), alert=True, trend_symbol="+", category="Unhealthy",
+        _payload(), alert=True, trend_symbol="+", aqi_value=160, category="Unhealthy",
         cat_color="red", city="Campbell",
+    )
+
+
+def test_render_handles_aqi_value_none():
+    """Sanity check: pre-AQI cache entries can land on the display path."""
+    airQuality.display_air_quality(
+        _payload(), alert=False, trend_symbol="-", aqi_value=None, category="Good",
+        cat_color="black", city="Campbell",
     )
