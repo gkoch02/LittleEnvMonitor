@@ -1,3 +1,4 @@
+import argparse
 import configparser
 import functools
 import json
@@ -12,8 +13,12 @@ from datetime import datetime, timezone
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from waveshare_epd import epd2in13b_V4
+# The Waveshare hardware import used to live here at module scope, paired with
+# a sys.path.insert. Both moved into display_air_quality() so a dev box (no
+# RPi.GPIO/spidev installed, no test-time stub) can still `import airQuality`
+# for the --dry-run renderer. When run as a script, Python already adds the
+# script's directory to sys.path[0], so the lazy import resolves the vendored
+# package without help.
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -45,6 +50,24 @@ SLEEP_TIMEOUT_SEC = 10
 # Cap any Retry-After the server hands us; a 5-minute hint would blow the
 # 120s systemd TimeoutStartSec before we ever reached the cache fallback.
 RETRY_AFTER_CAP_SEC = 30
+
+# epd2in13b_V4 is 122x250 native; we draw landscape so the panel is 250 wide.
+# Hard-coded so the dry-run path can render without importing the hardware
+# module — the EPD class's `width`/`height` are the same values anyway.
+PANEL_WIDTH = 250
+PANEL_HEIGHT = 122
+
+# EPA PM2.5 → AQI breakpoints (40 CFR Part 58 App. G, 2012 revision). Matches
+# the bands `classify_aqi` already uses, so the numeric AQI and the category
+# label always agree.
+_PM25_AQI_BREAKPOINTS = (
+    (0.0, 12.0, 0, 50),
+    (12.1, 35.4, 51, 100),
+    (35.5, 55.4, 101, 150),
+    (55.5, 150.4, 151, 200),
+    (150.5, 250.4, 201, 300),
+    (250.5, 500.4, 301, 500),
+)
 
 
 def load_config(path):
@@ -124,6 +147,24 @@ def classify_aqi(pm25):
     if pm25 <= 250.4:
         return "Very Unhealthy", "red"
     return "Hazardous", "red"
+
+
+def pm25_to_aqi(pm25):
+    """EPA PM2.5 (µg/m³) → integer AQI via piecewise-linear interpolation.
+
+    Returns None for invalid input (negative, non-numeric). Values above the
+    top breakpoint (500.4 µg/m³) are clamped to 500 — EPA's top-of-scale.
+    """
+    try:
+        c = round(float(pm25), 1)
+    except (TypeError, ValueError):
+        return None
+    if c < 0:
+        return None
+    for pm_lo, pm_hi, aqi_lo, aqi_hi in _PM25_AQI_BREAKPOINTS:
+        if pm_lo <= c <= pm_hi:
+            return round((aqi_hi - aqi_lo) / (pm_hi - pm_lo) * (c - pm_lo) + aqi_lo)
+    return 500
 
 
 def fetch_purpleair_data(sensor_id, api_key, retries=3, timeout=15):
@@ -267,7 +308,96 @@ def write_heartbeat():
     os.replace(tmp, HEARTBEAT_PATH)
 
 
-def display_air_quality(data, alert, trend_symbol, category, cat_color, city, stale=False):
+def _render_panel_images(
+    data, alert, trend_symbol, aqi_value, category, cat_color, city, stale,
+):
+    """Build the (black, red) 1-bit images that make up one panel render.
+
+    Hardware-free so both the live e-ink path and the --dry-run PNG path can
+    share it. Returns the un-rotated images; the EPD path rotates 180°
+    afterwards, the PNG path leaves them upright.
+    """
+    width, height = PANEL_WIDTH, PANEL_HEIGHT
+
+    font_large = _load_font(18)
+    font_small = _load_font(16)
+    font_xsmall = _load_font(12)
+
+    image_black = Image.new("1", (width, height), 255)
+    image_red = Image.new("1", (width, height), 255)
+    draw_black = ImageDraw.Draw(image_black)
+    draw_red = ImageDraw.Draw(image_red)
+
+    draw_red.rectangle((5, 5, width - 5, height - 5), outline=0, width=3)
+    draw_black.rectangle((3, 3, width - 3, height - 3), outline=0, width=3)
+
+    if stale:
+        draw_red.text((10, 10), "Air Quality [CACHED]", font=font_large, fill=0)
+    elif alert:
+        draw_red.text((10, 10), "AQI Rising!", font=font_large, fill=0)
+    else:
+        draw_red.text((10, 10), f"Air Quality - {city}", font=font_large, fill=0)
+
+    y_offset = 40
+    spacing = 18
+    draw_black.line(
+        [(10, y_offset - 4), (width - 10, y_offset - 4)], fill=0, width=1
+    )
+    draw_black.text(
+        (10, y_offset),
+        f"PM2.5: {data['PM2.5']} µg/m³  {trend_symbol}",
+        font=font_small,
+        fill=0,
+    )
+    draw_black.text(
+        (10, y_offset + spacing),
+        f"PM10:  {data['PM10']} µg/m³",
+        font=font_small,
+        fill=0,
+    )
+    draw_black.text(
+        (10, y_offset + 3 * spacing),
+        f"T/H:   {data['Temp']} °F / {data['Humidity']}%",
+        font=font_small,
+        fill=0,
+    )
+
+    aqi_y = y_offset + 2 * spacing
+    if aqi_value is not None:
+        aqi_text = f"AQI: {aqi_value} ({category})"
+    else:
+        aqi_text = f"AQI: {category}"
+    if cat_color == "red":
+        draw_red.text((10, aqi_y), aqi_text, font=font_small, fill=0)
+    else:
+        draw_black.text((10, aqi_y), aqi_text, font=font_small, fill=0)
+
+    timestamp = datetime.now().strftime("%I:%M%p").lstrip("0").lower()
+    bbox = font_xsmall.getbbox(timestamp)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    x = width - text_width - 10
+    y = height - text_height - 12
+    draw_red.text((x, y), timestamp, font=font_xsmall, fill=0)
+
+    return image_black, image_red
+
+
+def display_air_quality(
+    data, alert, trend_symbol, aqi_value, category, cat_color, city, stale=False,
+):
+    # Lazy hardware import — keeps `import airQuality` working on dev boxes
+    # that don't have RPi.GPIO/spidev installed (and don't have the test-time
+    # waveshare stub). Python adds the script's directory to sys.path[0] when
+    # running as a script, so the vendored package resolves without help.
+    from waveshare_epd import epd2in13b_V4
+
+    image_black, image_red = _render_panel_images(
+        data, alert, trend_symbol, aqi_value, category, cat_color, city, stale,
+    )
+    image_black = image_black.rotate(180)
+    image_red = image_red.rotate(180)
+
     # Two alarms because SIGALRM is one-shot: once it fires (or is cancelled by
     # the with-exit), epd.sleep() in the finally would no longer be fenced.
     # The second alarm keeps the panel-sleep invariant honest even when the
@@ -281,69 +411,6 @@ def display_air_quality(data, alert, trend_symbol, category, cat_color, city, st
             if epd.init() == -1:
                 raise RuntimeError("epd.init failed (SPI/GPIO unavailable)")
             epd.Clear()
-
-            font_large = _load_font(18)
-            font_small = _load_font(16)
-            font_xsmall = _load_font(12)
-
-            width, height = epd.height, epd.width
-            image_black = Image.new("1", (width, height), 255)
-            image_red = Image.new("1", (width, height), 255)
-            draw_black = ImageDraw.Draw(image_black)
-            draw_red = ImageDraw.Draw(image_red)
-
-            draw_red.rectangle((5, 5, width - 5, height - 5), outline=0, width=3)
-            draw_black.rectangle((3, 3, width - 3, height - 3), outline=0, width=3)
-
-            if stale:
-                draw_red.text((10, 10), "Air Quality [CACHED]", font=font_large, fill=0)
-            elif alert:
-                draw_red.text((10, 10), "AQI Rising!", font=font_large, fill=0)
-            else:
-                draw_red.text((10, 10), f"Air Quality - {city}", font=font_large, fill=0)
-
-            y_offset = 40
-            spacing = 18
-            draw_black.line(
-                [(10, y_offset - 4), (width - 10, y_offset - 4)], fill=0, width=1
-            )
-            draw_black.text(
-                (10, y_offset),
-                f"PM2.5: {data['PM2.5']} µg/m³  {trend_symbol}",
-                font=font_small,
-                fill=0,
-            )
-            draw_black.text(
-                (10, y_offset + spacing),
-                f"PM10:  {data['PM10']} µg/m³",
-                font=font_small,
-                fill=0,
-            )
-            draw_black.text(
-                (10, y_offset + 3 * spacing),
-                f"T/H:   {data['Temp']} °F / {data['Humidity']}%",
-                font=font_small,
-                fill=0,
-            )
-
-            aqi_y = y_offset + 2 * spacing
-            aqi_text = f"AQI: {category}"
-            if cat_color == "red":
-                draw_red.text((10, aqi_y), aqi_text, font=font_small, fill=0)
-            else:
-                draw_black.text((10, aqi_y), aqi_text, font=font_small, fill=0)
-
-            timestamp = datetime.now().strftime("%I:%M%p").lstrip("0").lower()
-            bbox = font_xsmall.getbbox(timestamp)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-            x = width - text_width - 10
-            y = height - text_height - 12
-            draw_red.text((x, y), timestamp, font=font_xsmall, fill=0)
-
-            image_black = image_black.rotate(180)
-            image_red = image_red.rotate(180)
-
             epd.display(epd.getbuffer(image_black), epd.getbuffer(image_red))
     finally:
         # Always sleep the panel; leaving it powered shortens its life.
@@ -353,6 +420,43 @@ def display_air_quality(data, alert, trend_symbol, category, cat_color, city, st
                 epd.sleep()
         except Exception:
             log.exception("Failed to put e-ink panel to sleep")
+
+
+def render_preview_png(
+    data, alert, trend_symbol, aqi_value, category, cat_color, city,
+    stale=False, out_path="airquality-preview.png", scale=3,
+):
+    """Composite the panel layout into an upscaled RGB PNG. No hardware needed.
+
+    Used by `--dry-run` for end-to-end smoke testing on dev boxes, and by
+    `docs/generate_preview.py` to refresh the README screenshot.
+    """
+    image_black, image_red = _render_panel_images(
+        data, alert, trend_symbol, aqi_value, category, cat_color, city, stale,
+    )
+    width, height = PANEL_WIDTH, PANEL_HEIGHT
+    preview = Image.new("RGB", (width, height), (250, 250, 250))
+    # PIL.Image.load() returns Optional in mypy stubs but is non-None for any
+    # image we've actually constructed; assert so the type narrows for the
+    # tight pixel loop below.
+    px = preview.load()
+    rb = image_red.load()
+    bb = image_black.load()
+    assert px is not None and rb is not None and bb is not None
+    # Black wins overlaps, mirroring how the actual panel renders the two
+    # buffers — red pixels show through only where black is unset.
+    for j in range(height):
+        for i in range(width):
+            if bb[i, j] == 0:
+                px[i, j] = (20, 20, 20)
+            elif rb[i, j] == 0:
+                px[i, j] = (200, 30, 30)
+    if scale != 1:
+        preview = preview.resize(
+            (width * scale, height * scale), Image.Resampling.NEAREST,
+        )
+    preview.save(out_path)
+    return out_path
 
 
 def _summary(branch, pm25=None, rising=None, source=None):
@@ -378,16 +482,40 @@ def _render_cached_fallback(city, source):
         log.error("Cached reading is unusable")
         _summary("fail", source=source)
         return 1
+    aqi_value = pm25_to_aqi(pm25)
     category, cat_color = classify_aqi(pm25)
     try:
-        display_air_quality(cached, False, "?", category, cat_color, city, stale=True)
+        display_air_quality(
+            cached, False, "?", aqi_value, category, cat_color, city, stale=True,
+        )
     except Exception:
         log.exception("Failed to display cached data")
     _summary("cache_fallback", pm25=pm25, source=source)
     return 1
 
 
-def main():
+def _parse_args(argv):
+    parser = argparse.ArgumentParser(
+        description="Fetch a PurpleAir reading and render it to the e-ink panel."
+    )
+    parser.add_argument(
+        "--dry-run",
+        nargs="?",
+        const="airquality-preview.png",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Fetch real data and write a PNG preview instead of pushing to the "
+            "e-ink panel. Defaults to ./airquality-preview.png. Skips cache and "
+            "heartbeat writes; falls through to exit 1 on fetch failure rather "
+            "than rendering [CACHED]."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = _parse_args(argv)
     api_key, sensor_id, weather_coords, city = load_config(CONF_PATH)
     source = "purpleair"
     try:
@@ -417,10 +545,27 @@ def main():
                 last_pm25 = None
         rising = last_pm25 is not None and (current_pm25 - last_pm25) >= TREND_THRESHOLD
         trend_symbol = "+" if last_pm25 is not None and current_pm25 > last_pm25 else "-"
+        aqi_value = pm25_to_aqi(current_pm25)
         category, cat_color = classify_aqi(current_pm25)
-        display_air_quality(data, rising, trend_symbol, category, cat_color, city)
+        if args.dry_run is not None:
+            # Smoke-test path: render to PNG, skip hardware and persistence.
+            # Surface fetch failures as a hard exit instead of a [CACHED] render
+            # — the operator asked for a fresh preview, not a stale one.
+            render_preview_png(
+                data, rising, trend_symbol, aqi_value, category, cat_color, city,
+                stale=False, out_path=args.dry_run,
+            )
+            log.info("Dry-run preview written to %s", args.dry_run)
+            _summary("dry_run", pm25=current_pm25, rising=rising, source=source)
+            return 0
+        display_air_quality(
+            data, rising, trend_symbol, aqi_value, category, cat_color, city,
+        )
     except Exception:
         log.exception("Live fetch/display failed; trying cache")
+        if args.dry_run is not None:
+            _summary("dry_run_failed", source=source)
+            return 1
         return _render_cached_fallback(city, source)
 
     # Display succeeded. Persistence failures here shouldn't downgrade the run

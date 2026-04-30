@@ -124,9 +124,33 @@ sudo install -m 0644 "$REPO_DIR/systemd/airquality.timer" /etc/systemd/system/ai
 sudo systemctl daemon-reload
 sudo systemctl enable --now airquality.timer
 
+echo "==> Triggering an initial run to verify the install..."
+# Type=oneshot, so `systemctl start` blocks until the service exits. We don't
+# bail on a non-zero exit here: a transient PurpleAir failure or a freshly
+# enabled SPI bus that needs a reboot would surface as Result=exit-code, and
+# the timer will retry on the next tick. Surface the outcome + recent journal
+# lines so the operator can tell which case they're in.
+sudo systemctl start airquality.service || true
+RESULT="$(systemctl show airquality.service --property=Result --value 2>/dev/null || echo unknown)"
+EXIT_CODE="$(systemctl show airquality.service --property=ExecMainStatus --value 2>/dev/null || echo '?')"
+case "$RESULT" in
+    success)
+        echo "    Initial run OK (Result=success, ExecMainStatus=$EXIT_CODE)."
+        ;;
+    *)
+        echo "    Initial run did not finish cleanly (Result=$RESULT, ExecMainStatus=$EXIT_CODE)."
+        echo "    Common causes: SPI was just enabled and needs a reboot; PurpleAir is briefly unreachable;"
+        echo "    the e-ink ribbon is loose. The timer will retry every 30 minutes."
+        ;;
+esac
+echo ""
+echo "Recent service log:"
+journalctl -u airquality.service --no-pager -n 20 || true
+
 echo ""
 echo "Done. Timer status:"
 systemctl status airquality.timer --no-pager || true
 echo ""
 echo "To trigger a manual run: sudo systemctl start airquality.service"
 echo "To watch logs:           journalctl -u airquality.service -f"
+echo "To preview without hardware: $VENV_PYTHON $REPO_DIR/airQuality.py --dry-run /tmp/preview.png"

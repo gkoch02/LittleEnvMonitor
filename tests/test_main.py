@@ -38,11 +38,14 @@ def display_recorder(monkeypatch):
     """Replace display_air_quality with a recorder so tests can assert what got drawn."""
     calls = []
 
-    def _record(data, alert, trend_symbol, category, cat_color, city, stale=False):
+    def _record(
+        data, alert, trend_symbol, aqi_value, category, cat_color, city, stale=False,
+    ):
         calls.append({
             "data": dict(data),
             "alert": alert,
             "trend_symbol": trend_symbol,
+            "aqi_value": aqi_value,
             "category": category,
             "cat_color": cat_color,
             "city": city,
