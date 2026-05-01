@@ -22,9 +22,11 @@ Pulls PM2.5, PM10, temperature, and humidity from a [PurpleAir](https://www2.pur
   - `"Air Quality [CACHED]"` — when the live fetch failed and the reading came from disk.
   - `"AQI Rising!"` — when PM2.5 has climbed by at least `TREND_THRESHOLD` µg/m³ since the previous reading.
   - The location label otherwise (`"Air Quality - <city>"`). The city comes from `[display] city` in `airquality.conf` and defaults to `Campbell`.
-- **Body (black).** PM2.5 with a `+`/`-` trend marker, PM10, AQI (numeric value plus category, e.g. `AQI: 75 (Moderate)`), temperature, and humidity. The numeric AQI uses EPA's piecewise-linear PM2.5 → AQI conversion.
-- **AQI line (red)** when the category is "Unhealthy for Sensitive Groups" or worse (PM2.5 > 35.4 µg/m³); otherwise black.
-- **Timestamp (red, bottom-right)** — the time of the last update.
+- **Left column (black).** Compact stat rows: PM2.5 with a `+`/`-` trend marker, PM10, temperature, humidity.
+- **Right column — hero AQI.** Large numeric AQI under a small `AQI` caption with the category label beneath (e.g. `Good`, `Moderate`, `USG`, `Unhealthy`). The numeric AQI uses EPA's piecewise-linear PM2.5 → AQI conversion; `--` is shown if the reading is unusable.
+- **Hero number renders red** when the category is "Unhealthy for Sensitive Groups" or worse (PM2.5 > 35.4 µg/m³); otherwise black.
+- **AQI gauge bar (bottom).** Outlined rectangle with a red fill proportional to `min(AQI, 300) / 300`, so a saturated bar means "at least very unhealthy." On a `[CACHED]` render the bar is outlined-only — no red fill — to visually echo "this isn't fresh."
+- **Timestamp (red, bottom-right)** — the time of the last update, sharing the bottom strip with the gauge.
 
 ## Rebuilding from scratch
 
