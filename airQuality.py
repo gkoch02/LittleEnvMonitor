@@ -36,7 +36,7 @@ STATE_DIR = os.environ.get(
 CACHE_PATH = os.path.join(STATE_DIR, "airquality", "last_reading.json")
 HEARTBEAT_PATH = os.path.join(STATE_DIR, "airquality", "heartbeat")
 
-FONT_PATH_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_PATH_BOLD = os.path.join(REPO_DIR, "fonts", "Inter-Bold.ttf")
 
 USER_AGENT = "LittleEnvMonitor/1.0"
 

@@ -25,7 +25,7 @@ CONF_PATH="$REPO_DIR/airquality.conf"
 
 echo "==> Installing system packages..."
 sudo apt-get update -qq
-sudo apt-get install -y python3 python3-venv python3-pip fonts-dejavu-core
+sudo apt-get install -y python3 python3-venv python3-pip
 
 echo "==> Creating Python virtualenv at $VENV_DIR..."
 if [ ! -x "$VENV_PYTHON" ]; then

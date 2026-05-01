@@ -35,14 +35,14 @@ def test_http_session_is_cached_across_calls():
 def test_load_font_returns_truetype_when_available():
     airQuality._load_font.cache_clear()
     font = airQuality._load_font(16)
-    # CI installs fonts-dejavu-core, the deploy script does too. If this ever
-    # flips to PIL default on Ubuntu, the e-ink layout breaks silently.
+    # Inter-Bold.ttf is vendored under `fonts/`. If this ever flips to PIL
+    # default, the e-ink layout breaks silently.
     assert isinstance(font, ImageFont.FreeTypeFont)
 
 
 def test_load_font_falls_back_to_default_when_truetype_missing(monkeypatch):
-    """If DejaVuSans-Bold isn't installed, fall back to PIL's bundled default
-    rather than crashing the render."""
+    """If the vendored Inter file is missing, fall back to PIL's bundled
+    default rather than crashing the render."""
     airQuality._load_font.cache_clear()
 
     real_truetype = airQuality.ImageFont.truetype
