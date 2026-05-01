@@ -1,10 +1,11 @@
 """Tests for `display_air_quality` end-to-end against the FakeEPD stub.
 
-These do real PIL rendering (DejaVuSans-Bold ships with `fonts-dejavu-core`,
-preinstalled on Ubuntu CI runners and pulled in by `deploy.sh` on the Pi). They
-are the only coverage of the SR1 (`epd.init() == -1`) and SR2 (alarm watchdog)
-reliability fences — keeping them in the suite is what gets the project from
-~70 % coverage of `airQuality.py` to ~91 %.
+These do real PIL rendering (the Space Grotesk variable font is vendored at
+`fonts/SpaceGrotesk-VariableFont_wght.ttf`, so they work on any host without
+needing system fonts installed). They are the only coverage of the SR1
+(`epd.init() == -1`) and SR2 (alarm watchdog) reliability fences — keeping them
+in the suite is what gets the project from ~70 % coverage of `airQuality.py`
+to ~91 %.
 """
 import time
 
