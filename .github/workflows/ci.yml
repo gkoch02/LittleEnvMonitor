@@ -37,3 +37,30 @@ jobs:
 
       - name: Run tests
         run: python -m pytest
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint deploy.sh (shellcheck)
+        run: shellcheck deploy.sh
+
+      - name: Verify rendered systemd unit
+        run: |
+          # systemd-analyze validates ExecStart= paths exist, so substitute
+          # the template placeholders with values that point at real things
+          # on the runner before verifying.
+          mkdir -p /tmp/test-repo /tmp/test-state
+          cp airQuality.py /tmp/test-repo/airQuality.py
+          sed \
+            -e 's|@USER@|root|g' \
+            -e 's|@GROUP@|root|g' \
+            -e 's|@REPO_DIR@|/tmp/test-repo|g' \
+            -e 's|@PYTHON@|/usr/bin/python3|g' \
+            -e 's|@STATE_DIR@|/tmp/test-state|g' \
+            systemd/airquality.service.in > /tmp/airquality.service
+          systemd-analyze verify /tmp/airquality.service
+
+      - name: Verify timer
+        run: systemd-analyze verify systemd/airquality.timer

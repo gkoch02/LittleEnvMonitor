@@ -173,3 +173,47 @@ def test_retry_after_zero_falls_through_to_backoff(monkeypatch, mock_get):
     airQuality.fetch_purpleair_data(123, "key", retries=2)
     # First retry without a usable Retry-After uses 2**1 = 2s.
     assert captured_sleeps == [2]
+
+
+def test_retry_after_http_date_falls_through_to_backoff(monkeypatch, mock_get):
+    """Spec also allows an HTTP-date in Retry-After. We don't parse it; we
+    must fall through to the exponential backoff instead of raising."""
+    captured_sleeps = []
+    monkeypatch.setattr(airQuality.time, "sleep", lambda s: captured_sleeps.append(s))
+    payload = {
+        "sensor": {
+            "pm2.5": 1, "pm10.0": 1, "temperature": 1, "humidity": 1,
+            "last_seen": 1_700_000_000,
+        }
+    }
+    mock_get.side_effect = [
+        _mock_response(
+            429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"},
+        ),
+        _mock_response(200, payload),
+    ]
+    result = airQuality.fetch_purpleair_data(123, "key", retries=2)
+    assert result["PM2.5"] == 1
+    assert captured_sleeps == [2]  # 2**1 backoff, not the HTTP date
+
+
+def test_last_seen_zero_renders_as_na(mock_get):
+    """A `last_seen` of 0 means "no reading yet" — don't show 1969."""
+    mock_get.return_value = _mock_response(
+        200,
+        {
+            "sensor": {
+                "pm2.5": 5, "pm10.0": 6, "temperature": 70, "humidity": 40,
+                "last_seen": 0,
+            }
+        },
+    )
+    result = airQuality.fetch_purpleair_data(123, "key", retries=1)
+    assert result["Time"] == "N/A"
+
+
+def test_missing_sensor_key_raises_runtime_error(mock_get):
+    """A 200 response with no `sensor` key shouldn't escape as a bare KeyError."""
+    mock_get.return_value = _mock_response(200, {"unexpected": "shape"})
+    with pytest.raises((RuntimeError, KeyError)):
+        airQuality.fetch_purpleair_data(123, "key", retries=1)
