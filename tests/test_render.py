@@ -139,3 +139,123 @@ def test_render_handles_aqi_value_none_in_panel_images():
         category="Unknown", cat_color="black", city="Campbell", stale=False,
     )
     assert black.size == (airQuality.PANEL_WIDTH, airQuality.PANEL_HEIGHT)
+
+
+def test_minimal_theme_returns_two_layers_at_panel_size():
+    black, red = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="minimal",
+    )
+    assert black.size == (airQuality.PANEL_WIDTH, airQuality.PANEL_HEIGHT)
+    assert red.size == (airQuality.PANEL_WIDTH, airQuality.PANEL_HEIGHT)
+
+
+def test_minimal_theme_drops_left_stats_column():
+    """The minimal layout sacrifices the stats column for a bigger hero AQI;
+    a regression that re-introduced the stats rows would land ink in the
+    upper-left quadrant."""
+    stats_box = (8, 30, 130, 102)
+    black_default, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="default",
+    )
+    black_minimal, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="minimal",
+    )
+    assert _nonwhite(black_minimal, stats_box) < _nonwhite(black_default, stats_box)
+
+
+def test_minimal_theme_red_aqi_still_routes_to_red_layer():
+    aqi_box = (60, 25, airQuality.PANEL_WIDTH - 60, 95)
+    _, red_red = airQuality._render_panel_images(
+        _payload(pm25=80), alert=False, trend_symbol="+", aqi_value=160,
+        category="Unhealthy", cat_color="red", city="Campbell", stale=False,
+        theme="minimal",
+    )
+    _, red_blk = airQuality._render_panel_images(
+        _payload(pm25=10), alert=False, trend_symbol="+", aqi_value=42,
+        category="Good", cat_color="black", city="Campbell", stale=False,
+        theme="minimal",
+    )
+    assert _nonwhite(red_red, aqi_box) > _nonwhite(red_blk, aqi_box)
+
+
+def test_minimal_theme_handles_aqi_value_none():
+    black, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="-", aqi_value=None,
+        category="Unknown", cat_color="black", city="Campbell", stale=False,
+        theme="minimal",
+    )
+    assert black.size == (airQuality.PANEL_WIDTH, airQuality.PANEL_HEIGHT)
+
+
+def test_minimal_theme_long_category_falls_back_to_short_form():
+    """USG label is wide enough that the full string overruns the panel; the
+    minimal renderer should swap in the short form rather than clip."""
+    black, red = airQuality._render_panel_images(
+        _payload(pm25=45), alert=False, trend_symbol="+", aqi_value=120,
+        category="Unhealthy for Sensitive Groups", cat_color="red",
+        city="Campbell", stale=False, theme="minimal",
+    )
+    assert black.size == (airQuality.PANEL_WIDTH, airQuality.PANEL_HEIGHT)
+
+
+def test_fredoka_theme_renders_at_panel_size():
+    black, red = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="fredoka",
+    )
+    assert black.size == (airQuality.PANEL_WIDTH, airQuality.PANEL_HEIGHT)
+    assert red.size == (airQuality.PANEL_WIDTH, airQuality.PANEL_HEIGHT)
+
+
+def test_fredoka_theme_keeps_default_layout_regions():
+    """Fredoka swaps the typeface but keeps the default two-column layout, so
+    the left-hand stats region must still carry meaningful ink (unlike minimal,
+    which empties it out). This catches a regression that would accidentally
+    point fredoka at the minimal body renderer."""
+    stats_box = (8, 30, 130, 102)
+    black_default, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="default",
+    )
+    black_fredoka, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="fredoka",
+    )
+    # Both should fill the stats region; ink counts should be in the same ballpark.
+    default_ink = _nonwhite(black_default, stats_box)
+    fredoka_ink = _nonwhite(black_fredoka, stats_box)
+    assert default_ink > 0
+    assert fredoka_ink > 0
+
+
+def test_fredoka_theme_uses_different_glyphs_than_default():
+    """Sanity check that the font swap actually produces different pixels —
+    if both themes resolved to Inter, this test would fail."""
+    black_default, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="default",
+    )
+    black_fredoka, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="fredoka",
+    )
+    assert list(black_default.getdata()) != list(black_fredoka.getdata())
+
+
+def test_unknown_theme_falls_back_to_default():
+    """A bogus theme that slipped past load_config (e.g. via direct API use)
+    should still render — `_render_panel_images` falls back to default rather
+    than blowing up."""
+    black_unknown, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="bogus",
+    )
+    black_default, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="default",
+    )
+    # Same theme = same pixels.
+    assert list(black_unknown.getdata()) == list(black_default.getdata())

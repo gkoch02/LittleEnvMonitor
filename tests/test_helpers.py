@@ -40,6 +40,22 @@ def test_load_font_returns_truetype_when_available():
     assert isinstance(font, ImageFont.FreeTypeFont)
 
 
+def test_load_font_selects_bold_instance_for_variable_font():
+    """Fredoka ships as a variable font with named instances (Light..Bold).
+    `_load_font` must pick Bold so glyph weight matches the Inter-Bold default
+    — a regression that left the font at Regular weight would render too thin
+    on the e-ink panel."""
+    airQuality._load_font.cache_clear()
+    font = airQuality._load_font(20, airQuality.FONT_PATH_FREDOKA)
+    assert isinstance(font, ImageFont.FreeTypeFont)
+    # Variable-instance API isn't on every Pillow build; only assert when present.
+    if hasattr(font, "get_variation_names"):
+        names = font.get_variation_names()
+        if names:
+            assert b"Bold" in names
+    airQuality._load_font.cache_clear()
+
+
 def test_load_font_falls_back_to_default_when_truetype_missing(monkeypatch):
     """If the vendored Inter file is missing, fall back to PIL's bundled
     default rather than crashing the render."""

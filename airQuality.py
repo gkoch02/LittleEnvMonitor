@@ -37,6 +37,7 @@ CACHE_PATH = os.path.join(STATE_DIR, "airquality", "last_reading.json")
 HEARTBEAT_PATH = os.path.join(STATE_DIR, "airquality", "heartbeat")
 
 FONT_PATH_BOLD = os.path.join(REPO_DIR, "fonts", "Inter-Bold.ttf")
+FONT_PATH_FREDOKA = os.path.join(REPO_DIR, "fonts", "Fredoka-VariableFont_wdth,wght.ttf")
 
 USER_AGENT = "LittleEnvMonitor/1.0"
 
@@ -57,6 +58,15 @@ RETRY_AFTER_CAP_SEC = 30
 # module — the EPD class's `width`/`height` are the same values anyway.
 PANEL_WIDTH = 250
 PANEL_HEIGHT = 122
+
+# Display variants the user can pick via [display] theme in airquality.conf.
+# `default` is the two-column hero+stats layout; `minimal` drops the stats
+# column for a giant centered AQI number; `fredoka` reuses the default layout
+# but swaps Inter-Bold for the rounder Fredoka typeface. Title bar, frame, and
+# bottom strip (gauge + timestamp) are shared so the alert/stale/cache
+# invariants behave the same regardless of theme.
+SUPPORTED_THEMES = ("default", "minimal", "fredoka")
+DEFAULT_THEME = "default"
 
 # EPA PM2.5 → AQI breakpoints (40 CFR Part 58 App. G, 2012 revision). Matches
 # the bands `classify_aqi` already uses, so the numeric AQI and the category
@@ -109,8 +119,15 @@ def load_config(path):
         weather_coords = (lat, lon)
 
     city = parser.get("display", "city", fallback="Campbell").strip() or "Campbell"
+    theme_raw = parser.get("display", "theme", fallback=DEFAULT_THEME).strip().lower()
+    theme = theme_raw or DEFAULT_THEME
+    if theme not in SUPPORTED_THEMES:
+        raise SystemExit(
+            f"Invalid theme '{theme}' in {path}: "
+            f"must be one of {', '.join(SUPPORTED_THEMES)}"
+        )
 
-    return api_key, sensor_id, weather_coords, city
+    return api_key, sensor_id, weather_coords, city, theme
 
 
 @functools.lru_cache(maxsize=1)
@@ -126,14 +143,27 @@ def _http_session():
     return session
 
 
-@functools.lru_cache(maxsize=8)
-def _load_font(size):
-    """Cache TrueType fonts at module level — they're identical every render."""
+@functools.lru_cache(maxsize=16)
+def _load_font(size, font_path=FONT_PATH_BOLD):
+    """Cache TrueType fonts at module level — they're identical every render.
+
+    For variable fonts (Fredoka ships as one) the Bold instance is selected
+    after load so glyph weights match Inter-Bold's default — the renderer
+    assumes a heavy weight everywhere.
+    """
     try:
-        return ImageFont.truetype(FONT_PATH_BOLD, size)
+        font = ImageFont.truetype(font_path, size)
     except OSError:
-        log.warning("Font %s missing; falling back to PIL default", FONT_PATH_BOLD)
+        log.warning("Font %s missing; falling back to PIL default", font_path)
         return ImageFont.load_default()
+    if hasattr(font, "get_variation_names"):
+        try:
+            if font.get_variation_names():
+                font.set_variation_by_name("Bold")
+        except (OSError, ValueError):
+            # Variable font without a "Bold" named instance — leave at default.
+            pass
+    return font
 
 
 def classify_aqi(pm25):
@@ -368,54 +398,26 @@ def _draw_aqi_gauge(draw_black, draw_red, x0, y0, x1, y1, aqi_value):
         draw_red.rectangle((x0 + 1, y0 + 1, x0 + 1 + fill_px, y1 - 1), fill=0)
 
 
-def _render_panel_images(
-    data, alert, trend_symbol, aqi_value, category, cat_color, city, stale,
+# Each theme picks a font family. The fredoka theme reuses the default layout
+# but swaps Inter-Bold for Fredoka so the user can pick the typeface without
+# also changing the layout. Add a row here to introduce a new font-only theme.
+_THEME_FONT_PATHS = {
+    "default": FONT_PATH_BOLD,
+    "minimal": FONT_PATH_BOLD,
+    "fredoka": FONT_PATH_FREDOKA,
+}
+
+
+def _draw_default_body(
+    draw_black, draw_red, width, data, trend_symbol, aqi_value, category, cat_color,
+    font_path=FONT_PATH_BOLD,
 ):
-    """Build the (black, red) 1-bit images that make up one panel render.
+    """Two-column body: stat rows on the left, hero AQI + category on the right."""
+    font_stat = _load_font(13, font_path)
+    font_hero = _load_font(38, font_path)
+    font_label = _load_font(11, font_path)
+    font_cat = _load_font(11, font_path)
 
-    Hardware-free so both the live e-ink path and the --dry-run PNG path can
-    share it. Returns the un-rotated images; the EPD path rotates 180°
-    afterwards, the PNG path leaves them upright.
-
-    Layout: title bar (red) + timestamp on top, two columns under a hairline
-    divider — left holds the four stat rows, right is a hero AQI number with
-    the category label beneath it — and an AQI gauge bar across the bottom.
-    """
-    width, height = PANEL_WIDTH, PANEL_HEIGHT
-
-    font_title = _load_font(15)
-    font_stat = _load_font(13)
-    font_hero = _load_font(38)
-    font_label = _load_font(11)
-    font_cat = _load_font(11)
-    font_time = _load_font(11)
-
-    image_black = Image.new("1", (width, height), 255)
-    image_red = Image.new("1", (width, height), 255)
-    draw_black = ImageDraw.Draw(image_black)
-    draw_red = ImageDraw.Draw(image_red)
-
-    # Thin double frame: keeps the existing border invariant (tests assert a
-    # black pixel at (3,3) and a red one at (5,5)) but at width=1 instead of 3
-    # so the inside has more room to breathe.
-    draw_black.rectangle((3, 3, width - 4, height - 4), outline=0, width=1)
-    draw_red.rectangle((5, 5, width - 6, height - 6), outline=0, width=1)
-
-    # Title bar (red). Stale and alert states reuse the title slot so the
-    # red-region pixel-count differential the layout tests look for stays.
-    if stale:
-        title = "Air Quality [CACHED]"
-    elif alert:
-        title = "AQI Rising!"
-    else:
-        title = f"Air Quality - {city}"
-    draw_red.text((10, 7), title, font=font_title, fill=0)
-
-    # Hairline divider under the title bar.
-    draw_black.line([(10, 27), (width - 10, 27)], fill=0, width=1)
-
-    # Left column: compact stat rows. Trend symbol rides next to PM2.5 since
-    # that's the value it's measured against.
     stats_x = 10
     stats_y = 33
     spacing = 18
@@ -436,9 +438,6 @@ def _render_panel_images(
         (stats_x, stats_y + 3 * spacing), f"Humid  {humid}%", font=font_stat, fill=0,
     )
 
-    # Right column: hero AQI number with "AQI" caption above and the category
-    # label below. Centered in the column so a 1-, 2-, or 3-digit number all
-    # look intentional.
     hero_x_left = 150
     hero_x_right = width - 8
     hero_x_center = (hero_x_left + hero_x_right) // 2
@@ -464,6 +463,102 @@ def _render_panel_images(
     else:
         draw_black.text(cat_pos, cat_short, font=font_cat, fill=0)
 
+
+def _draw_minimal_body(
+    draw_black, draw_red, width, aqi_value, category, cat_color,
+    font_path=FONT_PATH_BOLD,
+):
+    """Hero-only body: giant centered AQI number with the category beneath it.
+
+    Drops the per-pollutant stats column so the AQI is legible from across the
+    room. The bottom gauge still carries the numeric value so the trade-off is
+    "less detail, more glance-ability" rather than "less information."
+    """
+    font_hero = _load_font(56, font_path)
+    font_cat = _load_font(14, font_path)
+
+    center_x = width // 2
+
+    hero_text = str(aqi_value) if aqi_value is not None else "--"
+    hero_w, _ = _measure(font_hero, hero_text)
+    hero_pos = (center_x - hero_w // 2, 30)
+    if cat_color == "red":
+        draw_red.text(hero_pos, hero_text, font=font_hero, fill=0)
+    else:
+        draw_black.text(hero_pos, hero_text, font=font_hero, fill=0)
+
+    # Use the full category name when it fits; fall back to the short form
+    # only if it would overrun the panel width.
+    cat_text = category
+    cat_w, _ = _measure(font_cat, cat_text)
+    if cat_w > width - 20:
+        cat_text = _CATEGORY_SHORT.get(category, category)
+        cat_w, _ = _measure(font_cat, cat_text)
+    cat_pos = (center_x - cat_w // 2, 88)
+    if cat_color == "red":
+        draw_red.text(cat_pos, cat_text, font=font_cat, fill=0)
+    else:
+        draw_black.text(cat_pos, cat_text, font=font_cat, fill=0)
+
+
+def _render_panel_images(
+    data, alert, trend_symbol, aqi_value, category, cat_color, city, stale,
+    theme=DEFAULT_THEME,
+):
+    """Build the (black, red) 1-bit images that make up one panel render.
+
+    Hardware-free so both the live e-ink path and the --dry-run PNG path can
+    share it. Returns the un-rotated images; the EPD path rotates 180°
+    afterwards, the PNG path leaves them upright.
+
+    Layout: title bar (red), hairline divider, theme-specific body region,
+    AQI gauge bar + timestamp across the bottom. The frame, title bar, and
+    bottom strip are shared across themes; only the body changes.
+    """
+    if theme not in SUPPORTED_THEMES:
+        theme = DEFAULT_THEME
+    font_path = _THEME_FONT_PATHS.get(theme, FONT_PATH_BOLD)
+
+    width, height = PANEL_WIDTH, PANEL_HEIGHT
+
+    font_title = _load_font(15, font_path)
+    font_time = _load_font(11, font_path)
+
+    image_black = Image.new("1", (width, height), 255)
+    image_red = Image.new("1", (width, height), 255)
+    draw_black = ImageDraw.Draw(image_black)
+    draw_red = ImageDraw.Draw(image_red)
+
+    # Thin double frame: keeps the existing border invariant (tests assert a
+    # black pixel at (3,3) and a red one at (5,5)) but at width=1 instead of 3
+    # so the inside has more room to breathe.
+    draw_black.rectangle((3, 3, width - 4, height - 4), outline=0, width=1)
+    draw_red.rectangle((5, 5, width - 6, height - 6), outline=0, width=1)
+
+    # Title bar (red). Stale and alert states reuse the title slot so the
+    # red-region pixel-count differential the layout tests look for stays.
+    if stale:
+        title = "Air Quality [CACHED]"
+    elif alert:
+        title = "AQI Rising!"
+    else:
+        title = f"Air Quality - {city}"
+    draw_red.text((10, 7), title, font=font_title, fill=0)
+
+    # Hairline divider under the title bar.
+    draw_black.line([(10, 27), (width - 10, 27)], fill=0, width=1)
+
+    if theme == "minimal":
+        _draw_minimal_body(
+            draw_black, draw_red, width, aqi_value, category, cat_color,
+            font_path=font_path,
+        )
+    else:
+        _draw_default_body(
+            draw_black, draw_red, width, data, trend_symbol, aqi_value,
+            category, cat_color, font_path=font_path,
+        )
+
     # AQI gauge across the bottom, with the timestamp sharing the strip on
     # the right so the title bar stays uncluttered. Skip the red fill on a
     # stale render so an outlined-only bar visually echoes "this isn't fresh."
@@ -487,6 +582,7 @@ def _render_panel_images(
 
 def display_air_quality(
     data, alert, trend_symbol, aqi_value, category, cat_color, city, stale=False,
+    theme=DEFAULT_THEME,
 ):
     # Lazy hardware import — keeps `import airQuality` working on dev boxes
     # that don't have RPi.GPIO/spidev installed (and don't have the test-time
@@ -496,6 +592,7 @@ def display_air_quality(
 
     image_black, image_red = _render_panel_images(
         data, alert, trend_symbol, aqi_value, category, cat_color, city, stale,
+        theme=theme,
     )
     image_black = image_black.rotate(180)
     image_red = image_red.rotate(180)
@@ -526,7 +623,7 @@ def display_air_quality(
 
 def render_preview_png(
     data, alert, trend_symbol, aqi_value, category, cat_color, city,
-    stale=False, out_path="airquality-preview.png", scale=3,
+    stale=False, out_path="airquality-preview.png", scale=3, theme=DEFAULT_THEME,
 ):
     """Composite the panel layout into an upscaled RGB PNG. No hardware needed.
 
@@ -537,6 +634,7 @@ def render_preview_png(
     """
     image_black, image_red = _render_panel_images(
         data, alert, trend_symbol, aqi_value, category, cat_color, city, stale,
+        theme=theme,
     )
     width, height = PANEL_WIDTH, PANEL_HEIGHT
     preview = Image.new("RGB", (width, height), (250, 250, 250))
@@ -574,7 +672,7 @@ def _summary(branch, pm25=None, rising=None, source=None):
     )
 
 
-def _render_cached_fallback(city, source):
+def _render_cached_fallback(city, source, theme=DEFAULT_THEME):
     """Render the previous reading marked [CACHED]. Always returns exit code 1.
 
     Split out so the live path's persistence errors (write_cache/write_heartbeat)
@@ -595,6 +693,7 @@ def _render_cached_fallback(city, source):
     try:
         display_air_quality(
             cached, False, "?", aqi_value, category, cat_color, city, stale=True,
+            theme=theme,
         )
     except Exception:
         log.exception("Failed to display cached data")
@@ -624,7 +723,7 @@ def _parse_args(argv):
 
 def main(argv=None):
     args = _parse_args(argv)
-    api_key, sensor_id, weather_coords, city = load_config(CONF_PATH)
+    api_key, sensor_id, weather_coords, city, theme = load_config(CONF_PATH)
     source = "purpleair"
     try:
         data = fetch_purpleair_data(sensor_id, api_key)
@@ -661,20 +760,21 @@ def main(argv=None):
             # — the operator asked for a fresh preview, not a stale one.
             render_preview_png(
                 data, rising, trend_symbol, aqi_value, category, cat_color, city,
-                stale=False, out_path=args.dry_run,
+                stale=False, out_path=args.dry_run, theme=theme,
             )
             log.info("Dry-run preview written to %s", args.dry_run)
             _summary("dry_run", pm25=current_pm25, rising=rising, source=source)
             return 0
         display_air_quality(
             data, rising, trend_symbol, aqi_value, category, cat_color, city,
+            theme=theme,
         )
     except Exception:
         log.exception("Live fetch/display failed; trying cache")
         if args.dry_run is not None:
             _summary("dry_run_failed", source=source)
             return 1
-        return _render_cached_fallback(city, source)
+        return _render_cached_fallback(city, source, theme=theme)
 
     # Display succeeded. Persistence failures here shouldn't downgrade the run
     # to a cache-fallback render — the user's already looking at fresh data.
