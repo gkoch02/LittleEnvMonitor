@@ -339,6 +339,35 @@ def write_heartbeat():
     os.replace(tmp, HEARTBEAT_PATH)
 
 
+# Long category labels don't fit in the hero column; map them to short forms
+# so the band under the big AQI number always renders on a single line.
+_CATEGORY_SHORT = {
+    "Unhealthy for Sensitive Groups": "USG",
+}
+
+
+def _measure(font, text):
+    """Return (width, height) for `text` rendered in `font`."""
+    bbox = font.getbbox(text)
+    return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+
+def _draw_aqi_gauge(draw_black, draw_red, x0, y0, x1, y1, aqi_value):
+    """Outlined bar with red fill proportional to AQI / 300 (clamped).
+
+    300 is the EPA "Very Unhealthy" ceiling — a saturated bar means "at least
+    very unhealthy." A None or non-positive AQI just renders the empty outline.
+    """
+    draw_black.rectangle((x0, y0, x1, y1), outline=0, width=1)
+    if aqi_value is None or aqi_value <= 0:
+        return
+    inner_width = (x1 - 1) - (x0 + 1)
+    fill_ratio = min(aqi_value, 300) / 300
+    fill_px = int(round(fill_ratio * inner_width))
+    if fill_px > 0:
+        draw_red.rectangle((x0 + 1, y0 + 1, x0 + 1 + fill_px, y1 - 1), fill=0)
+
+
 def _render_panel_images(
     data, alert, trend_symbol, aqi_value, category, cat_color, city, stale,
 ):
@@ -347,69 +376,111 @@ def _render_panel_images(
     Hardware-free so both the live e-ink path and the --dry-run PNG path can
     share it. Returns the un-rotated images; the EPD path rotates 180°
     afterwards, the PNG path leaves them upright.
+
+    Layout: title bar (red) + timestamp on top, two columns under a hairline
+    divider — left holds the four stat rows, right is a hero AQI number with
+    the category label beneath it — and an AQI gauge bar across the bottom.
     """
     width, height = PANEL_WIDTH, PANEL_HEIGHT
 
-    font_large = _load_font(18)
-    font_small = _load_font(16)
-    font_xsmall = _load_font(12)
+    font_title = _load_font(15)
+    font_stat = _load_font(13)
+    font_hero = _load_font(38)
+    font_label = _load_font(11)
+    font_cat = _load_font(11)
+    font_time = _load_font(11)
 
     image_black = Image.new("1", (width, height), 255)
     image_red = Image.new("1", (width, height), 255)
     draw_black = ImageDraw.Draw(image_black)
     draw_red = ImageDraw.Draw(image_red)
 
-    draw_red.rectangle((5, 5, width - 5, height - 5), outline=0, width=3)
-    draw_black.rectangle((3, 3, width - 3, height - 3), outline=0, width=3)
+    # Thin double frame: keeps the existing border invariant (tests assert a
+    # black pixel at (3,3) and a red one at (5,5)) but at width=1 instead of 3
+    # so the inside has more room to breathe.
+    draw_black.rectangle((3, 3, width - 4, height - 4), outline=0, width=1)
+    draw_red.rectangle((5, 5, width - 6, height - 6), outline=0, width=1)
 
+    # Title bar (red). Stale and alert states reuse the title slot so the
+    # red-region pixel-count differential the layout tests look for stays.
     if stale:
-        draw_red.text((10, 10), "Air Quality [CACHED]", font=font_large, fill=0)
+        title = "Air Quality [CACHED]"
     elif alert:
-        draw_red.text((10, 10), "AQI Rising!", font=font_large, fill=0)
+        title = "AQI Rising!"
     else:
-        draw_red.text((10, 10), f"Air Quality - {city}", font=font_large, fill=0)
+        title = f"Air Quality - {city}"
+    draw_red.text((10, 7), title, font=font_title, fill=0)
 
-    y_offset = 40
+    # Hairline divider under the title bar.
+    draw_black.line([(10, 27), (width - 10, 27)], fill=0, width=1)
+
+    # Left column: compact stat rows. Trend symbol rides next to PM2.5 since
+    # that's the value it's measured against.
+    stats_x = 10
+    stats_y = 33
     spacing = 18
-    draw_black.line(
-        [(10, y_offset - 4), (width - 10, y_offset - 4)], fill=0, width=1
+    pm25 = data["PM2.5"]
+    pm10 = data["PM10"]
+    temp = data["Temp"]
+    humid = data["Humidity"]
+    draw_black.text(
+        (stats_x, stats_y), f"PM2.5  {pm25} {trend_symbol}", font=font_stat, fill=0,
     )
     draw_black.text(
-        (10, y_offset),
-        f"PM2.5: {data['PM2.5']} µg/m³  {trend_symbol}",
-        font=font_small,
-        fill=0,
+        (stats_x, stats_y + spacing), f"PM10   {pm10}", font=font_stat, fill=0,
     )
     draw_black.text(
-        (10, y_offset + spacing),
-        f"PM10:  {data['PM10']} µg/m³",
-        font=font_small,
-        fill=0,
+        (stats_x, stats_y + 2 * spacing), f"Temp   {temp}°F", font=font_stat, fill=0,
     )
     draw_black.text(
-        (10, y_offset + 3 * spacing),
-        f"T/H:   {data['Temp']} °F / {data['Humidity']}%",
-        font=font_small,
-        fill=0,
+        (stats_x, stats_y + 3 * spacing), f"Humid  {humid}%", font=font_stat, fill=0,
     )
 
-    aqi_y = y_offset + 2 * spacing
-    if aqi_value is not None:
-        aqi_text = f"AQI: {aqi_value} ({category})"
-    else:
-        aqi_text = f"AQI: {category}"
+    # Right column: hero AQI number with "AQI" caption above and the category
+    # label below. Centered in the column so a 1-, 2-, or 3-digit number all
+    # look intentional.
+    hero_x_left = 150
+    hero_x_right = width - 8
+    hero_x_center = (hero_x_left + hero_x_right) // 2
+
+    label_w, _ = _measure(font_label, "AQI")
+    draw_black.text(
+        (hero_x_center - label_w // 2, 31), "AQI", font=font_label, fill=0,
+    )
+
+    hero_text = str(aqi_value) if aqi_value is not None else "--"
+    hero_w, _ = _measure(font_hero, hero_text)
+    hero_pos = (hero_x_center - hero_w // 2, 41)
     if cat_color == "red":
-        draw_red.text((10, aqi_y), aqi_text, font=font_small, fill=0)
+        draw_red.text(hero_pos, hero_text, font=font_hero, fill=0)
     else:
-        draw_black.text((10, aqi_y), aqi_text, font=font_small, fill=0)
+        draw_black.text(hero_pos, hero_text, font=font_hero, fill=0)
 
+    cat_short = _CATEGORY_SHORT.get(category, category)
+    cat_w, _ = _measure(font_cat, cat_short)
+    cat_pos = (hero_x_center - cat_w // 2, 84)
+    if cat_color == "red":
+        draw_red.text(cat_pos, cat_short, font=font_cat, fill=0)
+    else:
+        draw_black.text(cat_pos, cat_short, font=font_cat, fill=0)
+
+    # AQI gauge across the bottom, with the timestamp sharing the strip on
+    # the right so the title bar stays uncluttered. Skip the red fill on a
+    # stale render so an outlined-only bar visually echoes "this isn't fresh."
     timestamp = datetime.now().strftime("%I:%M%p").lstrip("0").lower()
-    bbox = font_xsmall.getbbox(timestamp)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
-    x = width - text_width - 10
-    y = height - text_height - 12
-    draw_red.text((x, y), timestamp, font=font_xsmall, fill=0)
+    ts_w, _ = _measure(font_time, timestamp)
+    gauge_y0, gauge_y1 = 105, 113
+    gauge_x0 = 10
+    gauge_x1 = width - ts_w - 16
+    if stale:
+        draw_black.rectangle(
+            (gauge_x0, gauge_y0, gauge_x1, gauge_y1), outline=0, width=1,
+        )
+    else:
+        _draw_aqi_gauge(
+            draw_black, draw_red, gauge_x0, gauge_y0, gauge_x1, gauge_y1, aqi_value,
+        )
+    draw_red.text((gauge_x1 + 6, 102), timestamp, font=font_time, fill=0)
 
     return image_black, image_red
 
