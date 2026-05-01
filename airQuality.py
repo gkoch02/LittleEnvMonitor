@@ -36,10 +36,7 @@ STATE_DIR = os.environ.get(
 CACHE_PATH = os.path.join(STATE_DIR, "airquality", "last_reading.json")
 HEARTBEAT_PATH = os.path.join(STATE_DIR, "airquality", "heartbeat")
 
-FONT_PATH_BOLD = os.path.join(REPO_DIR, "fonts", "SpaceGrotesk-VariableFont_wght.ttf")
-# Named instance to pick out of the variable font (axis: wght). Falls back
-# silently if the file is somehow not a variable font with this name.
-FONT_VARIATION_BOLD = "Bold"
+FONT_PATH_BOLD = os.path.join(REPO_DIR, "fonts", "Inter-Bold.ttf")
 
 USER_AGENT = "LittleEnvMonitor/1.0"
 
@@ -133,16 +130,10 @@ def _http_session():
 def _load_font(size):
     """Cache TrueType fonts at module level — they're identical every render."""
     try:
-        font = ImageFont.truetype(FONT_PATH_BOLD, size)
+        return ImageFont.truetype(FONT_PATH_BOLD, size)
     except OSError:
         log.warning("Font %s missing; falling back to PIL default", FONT_PATH_BOLD)
         return ImageFont.load_default()
-    try:
-        font.set_variation_by_name(FONT_VARIATION_BOLD)
-    except (OSError, ValueError, AttributeError):
-        # Static font, missing axis, or older Pillow — render at default weight.
-        pass
-    return font
 
 
 def classify_aqi(pm25):

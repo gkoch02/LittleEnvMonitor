@@ -35,14 +35,14 @@ def test_http_session_is_cached_across_calls():
 def test_load_font_returns_truetype_when_available():
     airQuality._load_font.cache_clear()
     font = airQuality._load_font(16)
-    # The Space Grotesk variable font is vendored under `fonts/`. If this ever
-    # flips to PIL default, the e-ink layout breaks silently.
+    # Inter-Bold.ttf is vendored under `fonts/`. If this ever flips to PIL
+    # default, the e-ink layout breaks silently.
     assert isinstance(font, ImageFont.FreeTypeFont)
 
 
 def test_load_font_falls_back_to_default_when_truetype_missing(monkeypatch):
-    """If the vendored Space Grotesk file is missing, fall back to PIL's
-    bundled default rather than crashing the render."""
+    """If the vendored Inter file is missing, fall back to PIL's bundled
+    default rather than crashing the render."""
     airQuality._load_font.cache_clear()
 
     real_truetype = airQuality.ImageFont.truetype
@@ -59,31 +59,6 @@ def test_load_font_falls_back_to_default_when_truetype_missing(monkeypatch):
     font = airQuality._load_font(16)
     assert font is not None
     # Reset so other tests that assume the real font keep working.
-    airQuality._load_font.cache_clear()
-
-
-def test_load_font_swallows_variation_errors(monkeypatch):
-    """If `set_variation_by_name` blows up (static font, missing axis, older
-    Pillow), `_load_font` should still return the loaded font rather than
-    propagate."""
-    airQuality._load_font.cache_clear()
-
-    real_truetype = airQuality.ImageFont.truetype
-
-    def _truetype_with_failing_variation(font=None, size=10, *args, **kwargs):
-        f = real_truetype(font, size, *args, **kwargs)
-
-        def _raise(*_a, **_kw):
-            raise ValueError("not a variable font")
-
-        f.set_variation_by_name = _raise
-        return f
-
-    monkeypatch.setattr(
-        airQuality.ImageFont, "truetype", _truetype_with_failing_variation,
-    )
-    font = airQuality._load_font(16)
-    assert font is not None
     airQuality._load_font.cache_clear()
 
 
