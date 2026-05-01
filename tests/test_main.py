@@ -257,3 +257,114 @@ def test_heartbeat_failure_does_not_trigger_stale_render(
     assert rc == 0
     assert len(display_recorder) == 1
     assert display_recorder[0]["stale"] is False
+
+
+def test_heartbeat_content_is_iso8601_utc(state_dir, conf, display_recorder, monkeypatch):
+    """Operators alert on heartbeat staleness; the file must be parseable as UTC."""
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload())
+
+    rc = airQuality.main()
+
+    assert rc == 0
+    raw = (state_dir / "airquality" / "heartbeat").read_text()
+    parsed = datetime.fromisoformat(raw)
+    assert parsed.tzinfo is not None
+    # Within a few seconds of "now" — sanity check that we're not writing a
+    # frozen string.
+    delta = abs((datetime.now(timezone.utc) - parsed).total_seconds())
+    assert delta < 60
+
+
+def test_missing_temp_humidity_with_no_weather_section_logs_and_continues(
+    tmp_path, state_dir, display_recorder, monkeypatch, caplog
+):
+    """Branch: PurpleAir drops Temp/Humidity but conf has no [weather] section.
+    We log and render N/A — we do NOT pull stale temp/humidity from cache."""
+    conf_path = tmp_path / "airquality.conf"
+    conf_path.write_text("[purpleair]\napi_key = real-key\nsensor_id = 12345\n")
+    monkeypatch.setattr(airQuality, "CONF_PATH", str(conf_path))
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(temp="N/A", humidity="N/A"),
+    )
+
+    with caplog.at_level("INFO"):
+        rc = airQuality.main()
+
+    assert rc == 0
+    assert display_recorder[0]["data"]["Temp"] == "N/A"
+    assert display_recorder[0]["data"]["Humidity"] == "N/A"
+    assert any("no [weather] coords configured" in m for m in caplog.messages)
+
+
+def test_live_path_with_unparseable_cached_pm25_treats_trend_as_first_run(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """Branch: cache exists but PM2.5 is junk. last_pm25 falls through to None
+    and the trend marker behaves like a fresh start ('-', no banner)."""
+    cache_dir = state_dir / "airquality"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "last_reading.json").write_text(
+        json.dumps({"PM2.5": "junk", "PM10": 0, "Temp": 0, "Humidity": 0, "Time": "x"})
+    )
+
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload(pm25=20.0),
+    )
+
+    rc = airQuality.main()
+
+    assert rc == 0
+    assert display_recorder[0]["trend_symbol"] == "-"
+    assert display_recorder[0]["alert"] is False
+
+
+def test_cache_fallback_with_unparseable_pm25_returns_one_without_drawing(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """Branch: live fetch fails; cache is present but PM2.5 isn't a number.
+    We can't render a useful [CACHED] panel, so exit 1 and don't draw garbage."""
+    cache_dir = state_dir / "airquality"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "last_reading.json").write_text(
+        json.dumps({"PM2.5": "junk", "PM10": 0, "Temp": 0, "Humidity": 0, "Time": "x"})
+    )
+
+    def _boom(*a, **kw):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", _boom)
+
+    rc = airQuality.main()
+
+    assert rc == 1
+    assert display_recorder == []
+    assert not (state_dir / "airquality" / "heartbeat").exists()
+
+
+def test_cache_fallback_swallows_display_exception(
+    state_dir, conf, display_recorder, monkeypatch, caplog
+):
+    """Branch: cached data is valid but the panel itself errors during the
+    [CACHED] render. We log the exception, don't crash the process, and still
+    return 1 (the live fetch failed — that's the signal monitoring cares about)."""
+    cache_dir = state_dir / "airquality"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "last_reading.json").write_text(json.dumps(_purple_payload(pm25=15.0)))
+
+    def _fetch_boom(*a, **kw):
+        raise RuntimeError("network down")
+
+    def _display_boom(*a, **kw):
+        raise RuntimeError("panel exploded")
+
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", _fetch_boom)
+    monkeypatch.setattr(airQuality, "display_air_quality", _display_boom)
+
+    with caplog.at_level("ERROR"):
+        rc = airQuality.main()
+
+    assert rc == 1
+    assert any("Failed to display cached data" in m for m in caplog.messages)

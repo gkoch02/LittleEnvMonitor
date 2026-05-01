@@ -19,5 +19,5 @@ follow_imports = "silent"
 ignore_errors = true
 
 [tool.pytest.ini_options]
-addopts = "-v --cov=airQuality --cov-report=term-missing --cov-fail-under=75"
+addopts = "-v --cov=airQuality --cov-report=term-missing --cov-fail-under=98"
 testpaths = ["tests"]
