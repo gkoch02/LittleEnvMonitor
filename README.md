@@ -6,9 +6,16 @@ An air quality monitor for a Raspberry Pi Zero driving a [Waveshare 2.13" black/
 
 Pulls PM2.5, PM10, temperature, and humidity from a [PurpleAir](https://www2.purpleair.com) sensor via the PurpleAir API, classifies the AQI, and renders it to the display every 30 minutes during the day (08:00–21:30). If the live fetch fails, the script falls back to the last cached reading (the full payload, with the header relabelled `[CACHED]`) so the panel keeps showing useful data through transient outages.
 
-![Preview of the e-ink display output with dummy data](docs/preview.png)
+### Themes
 
-*Preview rendered with dummy data — regenerate with `python docs/generate_preview.py` after layout changes.*
+The layout is selectable via `[display] theme` in `airquality.conf`. Three variants ship today:
+
+| `default` | `minimal` | `fredoka` |
+|-----------|-----------|-----------|
+| ![default theme preview](docs/preview.png) | ![minimal theme preview](docs/preview-minimal.png) | ![fredoka theme preview](docs/preview-fredoka.png) |
+| Two-column hero+stats layout in Inter-Bold. | Single giant centered AQI; drops the per-pollutant stats column for at-a-glance legibility. | Same layout as `default`, rendered in the rounder Fredoka typeface. |
+
+*Previews rendered with dummy data — regenerate with `python docs/generate_preview.py` after layout changes.*
 
 ## Hardware
 
@@ -67,6 +74,8 @@ sensor_id = YOUR_SENSOR_ID
 
 - **`api_key`** — request one at [api.purpleair.com](https://api.purpleair.com) (PurpleAir issues a read key and a write key; this script only needs the read key). Can also be set via the `PURPLEAIR_API_KEY` env var, which wins over the file. Use the env var path with `EnvironmentFile=` (mode 0600) when you'd rather not keep the secret in the repo dir.
 - **`sensor_id`** — the integer that appears in the PurpleAir map URL when you click your sensor.
+- **`[display] city`** — optional. Shown in the title bar (`"Air Quality - <city>"`). Defaults to `Campbell`.
+- **`[display] theme`** — optional. Picks the display variant: `default`, `minimal`, or `fredoka`. See the [Themes](#themes) section above for screenshots. Defaults to `default`.
 
 `airquality.conf` is gitignored, so your key won't be committed.
 
