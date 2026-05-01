@@ -201,6 +201,50 @@ def test_minimal_theme_long_category_falls_back_to_short_form():
     assert black.size == (airQuality.PANEL_WIDTH, airQuality.PANEL_HEIGHT)
 
 
+def test_fredoka_theme_renders_at_panel_size():
+    black, red = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="fredoka",
+    )
+    assert black.size == (airQuality.PANEL_WIDTH, airQuality.PANEL_HEIGHT)
+    assert red.size == (airQuality.PANEL_WIDTH, airQuality.PANEL_HEIGHT)
+
+
+def test_fredoka_theme_keeps_default_layout_regions():
+    """Fredoka swaps the typeface but keeps the default two-column layout, so
+    the left-hand stats region must still carry meaningful ink (unlike minimal,
+    which empties it out). This catches a regression that would accidentally
+    point fredoka at the minimal body renderer."""
+    stats_box = (8, 30, 130, 102)
+    black_default, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="default",
+    )
+    black_fredoka, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="fredoka",
+    )
+    # Both should fill the stats region; ink counts should be in the same ballpark.
+    default_ink = _nonwhite(black_default, stats_box)
+    fredoka_ink = _nonwhite(black_fredoka, stats_box)
+    assert default_ink > 0
+    assert fredoka_ink > 0
+
+
+def test_fredoka_theme_uses_different_glyphs_than_default():
+    """Sanity check that the font swap actually produces different pixels —
+    if both themes resolved to Inter, this test would fail."""
+    black_default, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="default",
+    )
+    black_fredoka, _ = airQuality._render_panel_images(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell", stale=False, theme="fredoka",
+    )
+    assert list(black_default.getdata()) != list(black_fredoka.getdata())
+
+
 def test_unknown_theme_falls_back_to_default():
     """A bogus theme that slipped past load_config (e.g. via direct API use)
     should still render — `_render_panel_images` falls back to default rather

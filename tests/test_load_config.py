@@ -217,6 +217,16 @@ def test_display_theme_minimal_accepted(tmp_path):
     assert theme == "minimal"
 
 
+def test_display_theme_fredoka_accepted(tmp_path):
+    conf = tmp_path / "airquality.conf"
+    conf.write_text(
+        "[purpleair]\napi_key = real-key\nsensor_id = 1\n"
+        "[display]\ntheme = fredoka\n"
+    )
+    _, _, _, _, theme = airQuality.load_config(str(conf))
+    assert theme == "fredoka"
+
+
 def test_display_theme_is_case_insensitive(tmp_path):
     conf = tmp_path / "airquality.conf"
     conf.write_text(

@@ -37,6 +37,7 @@ CACHE_PATH = os.path.join(STATE_DIR, "airquality", "last_reading.json")
 HEARTBEAT_PATH = os.path.join(STATE_DIR, "airquality", "heartbeat")
 
 FONT_PATH_BOLD = os.path.join(REPO_DIR, "fonts", "Inter-Bold.ttf")
+FONT_PATH_FREDOKA = os.path.join(REPO_DIR, "fonts", "Fredoka-VariableFont_wdth,wght.ttf")
 
 USER_AGENT = "LittleEnvMonitor/1.0"
 
@@ -60,10 +61,11 @@ PANEL_HEIGHT = 122
 
 # Display variants the user can pick via [display] theme in airquality.conf.
 # `default` is the two-column hero+stats layout; `minimal` drops the stats
-# column for a giant centered AQI number. Title bar, frame, and bottom strip
-# (gauge + timestamp) are shared so the alert/stale/cache invariants behave
-# the same regardless of theme.
-SUPPORTED_THEMES = ("default", "minimal")
+# column for a giant centered AQI number; `fredoka` reuses the default layout
+# but swaps Inter-Bold for the rounder Fredoka typeface. Title bar, frame, and
+# bottom strip (gauge + timestamp) are shared so the alert/stale/cache
+# invariants behave the same regardless of theme.
+SUPPORTED_THEMES = ("default", "minimal", "fredoka")
 DEFAULT_THEME = "default"
 
 # EPA PM2.5 → AQI breakpoints (40 CFR Part 58 App. G, 2012 revision). Matches
@@ -141,14 +143,27 @@ def _http_session():
     return session
 
 
-@functools.lru_cache(maxsize=8)
-def _load_font(size):
-    """Cache TrueType fonts at module level — they're identical every render."""
+@functools.lru_cache(maxsize=16)
+def _load_font(size, font_path=FONT_PATH_BOLD):
+    """Cache TrueType fonts at module level — they're identical every render.
+
+    For variable fonts (Fredoka ships as one) the Bold instance is selected
+    after load so glyph weights match Inter-Bold's default — the renderer
+    assumes a heavy weight everywhere.
+    """
     try:
-        return ImageFont.truetype(FONT_PATH_BOLD, size)
+        font = ImageFont.truetype(font_path, size)
     except OSError:
-        log.warning("Font %s missing; falling back to PIL default", FONT_PATH_BOLD)
+        log.warning("Font %s missing; falling back to PIL default", font_path)
         return ImageFont.load_default()
+    if hasattr(font, "get_variation_names"):
+        try:
+            if font.get_variation_names():
+                font.set_variation_by_name("Bold")
+        except (OSError, ValueError):
+            # Variable font without a "Bold" named instance — leave at default.
+            pass
+    return font
 
 
 def classify_aqi(pm25):
@@ -383,14 +398,25 @@ def _draw_aqi_gauge(draw_black, draw_red, x0, y0, x1, y1, aqi_value):
         draw_red.rectangle((x0 + 1, y0 + 1, x0 + 1 + fill_px, y1 - 1), fill=0)
 
 
+# Each theme picks a font family. The fredoka theme reuses the default layout
+# but swaps Inter-Bold for Fredoka so the user can pick the typeface without
+# also changing the layout. Add a row here to introduce a new font-only theme.
+_THEME_FONT_PATHS = {
+    "default": FONT_PATH_BOLD,
+    "minimal": FONT_PATH_BOLD,
+    "fredoka": FONT_PATH_FREDOKA,
+}
+
+
 def _draw_default_body(
     draw_black, draw_red, width, data, trend_symbol, aqi_value, category, cat_color,
+    font_path=FONT_PATH_BOLD,
 ):
     """Two-column body: stat rows on the left, hero AQI + category on the right."""
-    font_stat = _load_font(13)
-    font_hero = _load_font(38)
-    font_label = _load_font(11)
-    font_cat = _load_font(11)
+    font_stat = _load_font(13, font_path)
+    font_hero = _load_font(38, font_path)
+    font_label = _load_font(11, font_path)
+    font_cat = _load_font(11, font_path)
 
     stats_x = 10
     stats_y = 33
@@ -438,15 +464,18 @@ def _draw_default_body(
         draw_black.text(cat_pos, cat_short, font=font_cat, fill=0)
 
 
-def _draw_minimal_body(draw_black, draw_red, width, aqi_value, category, cat_color):
+def _draw_minimal_body(
+    draw_black, draw_red, width, aqi_value, category, cat_color,
+    font_path=FONT_PATH_BOLD,
+):
     """Hero-only body: giant centered AQI number with the category beneath it.
 
     Drops the per-pollutant stats column so the AQI is legible from across the
     room. The bottom gauge still carries the numeric value so the trade-off is
     "less detail, more glance-ability" rather than "less information."
     """
-    font_hero = _load_font(56)
-    font_cat = _load_font(14)
+    font_hero = _load_font(56, font_path)
+    font_cat = _load_font(14, font_path)
 
     center_x = width // 2
 
@@ -488,11 +517,12 @@ def _render_panel_images(
     """
     if theme not in SUPPORTED_THEMES:
         theme = DEFAULT_THEME
+    font_path = _THEME_FONT_PATHS.get(theme, FONT_PATH_BOLD)
 
     width, height = PANEL_WIDTH, PANEL_HEIGHT
 
-    font_title = _load_font(15)
-    font_time = _load_font(11)
+    font_title = _load_font(15, font_path)
+    font_time = _load_font(11, font_path)
 
     image_black = Image.new("1", (width, height), 255)
     image_red = Image.new("1", (width, height), 255)
@@ -519,11 +549,14 @@ def _render_panel_images(
     draw_black.line([(10, 27), (width - 10, 27)], fill=0, width=1)
 
     if theme == "minimal":
-        _draw_minimal_body(draw_black, draw_red, width, aqi_value, category, cat_color)
+        _draw_minimal_body(
+            draw_black, draw_red, width, aqi_value, category, cat_color,
+            font_path=font_path,
+        )
     else:
         _draw_default_body(
             draw_black, draw_red, width, data, trend_symbol, aqi_value,
-            category, cat_color,
+            category, cat_color, font_path=font_path,
         )
 
     # AQI gauge across the bottom, with the timestamp sharing the strip on
