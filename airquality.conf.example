@@ -14,5 +14,11 @@ longitude = -121.9500
 
 # Optional. City name shown in the e-ink title bar ("Air Quality - <city>").
 # Defaults to "Campbell" if omitted.
+#
+# Optional. `theme` picks the display layout. Supported values:
+#   default - two-column layout with stat rows on the left and a hero AQI on the right
+#   minimal - single giant centered AQI number with the category label beneath
+# Defaults to "default" if omitted.
 [display]
 city = Campbell
+theme = default

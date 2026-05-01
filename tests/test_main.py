@@ -40,6 +40,7 @@ def display_recorder(monkeypatch):
 
     def _record(
         data, alert, trend_symbol, aqi_value, category, cat_color, city, stale=False,
+        theme=airQuality.DEFAULT_THEME,
     ):
         calls.append({
             "data": dict(data),
@@ -50,6 +51,7 @@ def display_recorder(monkeypatch):
             "cat_color": cat_color,
             "city": city,
             "stale": stale,
+            "theme": theme,
         })
 
     monkeypatch.setattr(airQuality, "display_air_quality", _record)
