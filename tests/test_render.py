@@ -8,6 +8,7 @@ pixel-perfect snapshots — that keeps them robust to font version differences
 across CI runners while still catching the kind of layout regression the
 existing call-sequence tests can't see.
 """
+import pytest
 from PIL import Image
 
 import airQuality
@@ -243,6 +244,24 @@ def test_fredoka_theme_uses_different_glyphs_than_default():
         cat_color="black", city="Campbell", stale=False, theme="fredoka",
     )
     assert list(black_default.getdata()) != list(black_fredoka.getdata())
+
+
+def test_render_preview_png_raises_when_load_returns_none(tmp_path, monkeypatch):
+    """Guard: if PIL.Image.load() ever returns None (closed/invalid image), the
+    compositor must raise RuntimeError rather than silently writing a blank PNG."""
+    from unittest.mock import MagicMock
+
+    bad = MagicMock()
+    bad.load.return_value = None
+    monkeypatch.setattr(airQuality, "_render_panel_images", lambda *a, **kw: (bad, bad))
+
+    with pytest.raises(RuntimeError, match="PIL.Image.load"):
+        airQuality.render_preview_png(
+            {"PM2.5": 12.0, "PM10": 18.0, "Temp": 70, "Humidity": 45, "Time": "12:00 PM"},
+            alert=False, trend_symbol="+", aqi_value=50, category="Good",
+            cat_color="black", city="Campbell", stale=False,
+            out_path=str(tmp_path / "out.png"),
+        )
 
 
 def test_unknown_theme_falls_back_to_default():

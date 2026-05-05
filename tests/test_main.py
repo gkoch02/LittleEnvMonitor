@@ -346,6 +346,88 @@ def test_cache_fallback_with_unparseable_pm25_returns_one_without_drawing(
     assert not (state_dir / "airquality" / "heartbeat").exists()
 
 
+def test_weather_fallback_fills_only_missing_temp(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """Partial fallback: only Temp is N/A — Humidity from PurpleAir must be preserved."""
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(temp="N/A", humidity=40),
+    )
+    monkeypatch.setattr(
+        airQuality, "fetch_local_weather",
+        lambda lat, lon, **kw: {"Temp": 65, "Humidity": 99},
+    )
+
+    rc = airQuality.main()
+
+    assert rc == 0
+    assert display_recorder[0]["data"]["Temp"] == 65      # filled from weather
+    assert display_recorder[0]["data"]["Humidity"] == 40  # kept from PurpleAir
+
+
+def test_weather_fallback_fills_only_missing_humidity(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """Partial fallback: only Humidity is N/A — Temp from PurpleAir must be preserved."""
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(temp=70, humidity="N/A"),
+    )
+    monkeypatch.setattr(
+        airQuality, "fetch_local_weather",
+        lambda lat, lon, **kw: {"Temp": 99, "Humidity": 55},
+    )
+
+    rc = airQuality.main()
+
+    assert rc == 0
+    assert display_recorder[0]["data"]["Temp"] == 70      # kept from PurpleAir
+    assert display_recorder[0]["data"]["Humidity"] == 55  # filled from weather
+
+
+def test_numeric_string_pm25_in_cache_computes_trend(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """Cache written by an older version may store PM2.5 as a numeric string.
+    float() coercion at lines 749-752 must parse it and produce a valid trend."""
+    cache_dir = state_dir / "airquality"
+    cache_dir.mkdir(parents=True)
+    import json
+    (cache_dir / "last_reading.json").write_text(
+        json.dumps({"PM2.5": "10.0", "PM10": 0, "Temp": 0, "Humidity": 0, "Time": "x"})
+    )
+
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload(pm25=20.0),
+    )
+
+    rc = airQuality.main()
+
+    assert rc == 0
+    # Delta = 10 >= TREND_THRESHOLD (5) → rising banner and '+' marker.
+    assert display_recorder[0]["alert"] is True
+    assert display_recorder[0]["trend_symbol"] == "+"
+
+
+def test_summary_logs_live_branch_on_success(
+    state_dir, conf, display_recorder, monkeypatch, caplog
+):
+    """_summary() must emit a structured log line on every exit path so
+    operators can grep journalctl for the run outcome."""
+    import logging
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload())
+
+    with caplog.at_level(logging.INFO, logger="airquality"):
+        airQuality.main()
+
+    summary_msgs = [m for m in caplog.messages if m.startswith("summary path=")]
+    assert len(summary_msgs) == 1
+    assert "path=live" in summary_msgs[0]
+    assert "pm25=" in summary_msgs[0]
+    assert "rising=" in summary_msgs[0]
+
+
 def test_cache_fallback_swallows_display_exception(
     state_dir, conf, display_recorder, monkeypatch, caplog
 ):
