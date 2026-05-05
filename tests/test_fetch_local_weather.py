@@ -62,7 +62,7 @@ def test_non_numeric_temperature_returns_na(mock_get):
 
 
 def test_non_numeric_humidity_returns_na(mock_get):
-    """Guard: relative_humidity_2m is a string — isinstance check must reject it and return 'N/A'."""
+    """Guard: relative_humidity_2m is a string — isinstance rejects it and returns 'N/A'."""
     payload = {"current": {"temperature_2m": 72.4, "relative_humidity_2m": "55"}}
     mock_get.return_value = _mock_response(200, payload)
     result = airQuality.fetch_local_weather(37.0, -121.0)
