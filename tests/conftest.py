@@ -47,11 +47,14 @@ class FakeEPD:
         self.calls.append(("Clear",))
 
     def getbuffer(self, image):
-        self.calls.append(("getbuffer",))
-        return b""
+        # Record the actual image so tests can verify which layer was passed.
+        # Returning a tagged sentinel lets `display`'s recorder assert the
+        # positional order (black buffer first, red buffer second).
+        self.calls.append(("getbuffer", image))
+        return ("buffer-for", id(image))
 
     def display(self, *args, **kwargs):
-        self.calls.append(("display",))
+        self.calls.append(("display", args, kwargs))
 
     def sleep(self):
         self.calls.append(("sleep",))

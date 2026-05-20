@@ -116,3 +116,50 @@ def test_render_handles_aqi_value_none():
         _payload(), alert=False, trend_symbol="-", aqi_value=None, category="Good",
         cat_color="black", city="Campbell",
     )
+
+
+def test_display_routes_black_buffer_first_red_second():
+    """Regression guard: `epd.display(getbuffer(black), getbuffer(red))` is
+    order-sensitive. A swap would render the red and black layers on the wrong
+    sub-panel — visually catastrophic but the call-sequence test wouldn't
+    notice. Pin the positional order by id-matching the two getbuffer images
+    against the args passed to display()."""
+    airQuality.display_air_quality(
+        _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+        cat_color="black", city="Campbell",
+    )
+    calls = epd2in13b_V4.EPD.instances[0].calls
+    getbuffers = [c for c in calls if c[0] == "getbuffer"]
+    displays = [c for c in calls if c[0] == "display"]
+    assert len(getbuffers) == 2
+    assert len(displays) == 1
+
+    first_image, second_image = getbuffers[0][1], getbuffers[1][1]
+    # The buffers passed to display() must come from the first (black) and
+    # second (red) getbuffer calls in that order — not swapped.
+    display_args = displays[0][1]
+    assert display_args[0] == ("buffer-for", id(first_image))
+    assert display_args[1] == ("buffer-for", id(second_image))
+    # Both layers should be 1-bit panel-sized images (post-180° rotation).
+    assert first_image.mode == "1"
+    assert second_image.mode == "1"
+    assert first_image.size == (airQuality.PANEL_WIDTH, airQuality.PANEL_HEIGHT)
+    assert second_image.size == (airQuality.PANEL_WIDTH, airQuality.PANEL_HEIGHT)
+
+
+def test_sleep_exception_is_logged_not_raised(monkeypatch, caplog):
+    """SR2 invariant: if epd.sleep() raises (e.g. SPI glitch), the exception
+    must be caught and logged, not propagated — otherwise a successful display
+    would still surface as a failure to main()."""
+    def _boom(self):
+        self.calls.append(("sleep_boom",))
+        raise RuntimeError("sleep failed")
+
+    monkeypatch.setattr(epd2in13b_V4.EPD, "sleep", _boom)
+
+    with caplog.at_level("ERROR"):
+        airQuality.display_air_quality(
+            _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
+            cat_color="black", city="Campbell",
+        )
+    assert any("Failed to put e-ink panel to sleep" in m for m in caplog.messages)
