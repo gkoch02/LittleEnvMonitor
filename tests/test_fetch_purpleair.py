@@ -49,6 +49,7 @@ def test_successful_fetch_parses_fields(mock_get):
     assert result["Temp"] == 68
     assert result["Humidity"] == 45
     assert result["Time"] != "N/A"
+    assert result["LastSeenEpoch"] == 1_700_000_000
     assert mock_get.call_count == 1
 
 
@@ -104,6 +105,7 @@ def test_missing_sensor_fields_default_to_na(mock_get):
     assert result["Temp"] == "N/A"
     assert result["Humidity"] == "N/A"
     assert result["Time"] == "N/A"
+    assert result["LastSeenEpoch"] is None
 
 
 def test_429_retries_with_retry_after_header(mock_get):
@@ -210,6 +212,7 @@ def test_last_seen_zero_renders_as_na(mock_get):
     )
     result = airQuality.fetch_purpleair_data(123, "key", retries=1)
     assert result["Time"] == "N/A"
+    assert result["LastSeenEpoch"] is None
 
 
 def test_missing_sensor_key_raises_runtime_error(mock_get):
@@ -217,3 +220,65 @@ def test_missing_sensor_key_raises_runtime_error(mock_get):
     mock_get.return_value = _mock_response(200, {"unexpected": "shape"})
     with pytest.raises((RuntimeError, KeyError)):
         airQuality.fetch_purpleair_data(123, "key", retries=1)
+
+
+# --- Freshness validation (issue #17) ---------------------------------------
+#
+# fetch_purpleair_data() only carries the raw epoch through; the actual
+# freshness policy (threshold, missing/malformed/future-skew handling) lives
+# in airQuality._is_fresh() and is exercised directly here, plus end-to-end
+# in tests/test_main.py against main()'s cache-fallback wiring.
+
+
+def test_is_fresh_accepts_recent_sample():
+    now = 1_700_010_000
+    assert airQuality._is_fresh(now - 60, now=now) is True
+
+
+def test_is_fresh_rejects_sample_past_threshold():
+    now = 1_700_010_000
+    stale = now - airQuality.FRESHNESS_THRESHOLD_SEC - 1
+    assert airQuality._is_fresh(stale, now=now) is False
+
+
+def test_is_fresh_accepts_sample_exactly_at_threshold():
+    now = 1_700_010_000
+    boundary = now - airQuality.FRESHNESS_THRESHOLD_SEC
+    assert airQuality._is_fresh(boundary, now=now) is True
+
+
+def test_is_fresh_rejects_none():
+    assert airQuality._is_fresh(None, now=1_700_010_000) is False
+
+
+def test_is_fresh_rejects_non_numeric_string():
+    assert airQuality._is_fresh("N/A", now=1_700_010_000) is False
+
+
+def test_is_fresh_rejects_zero_or_negative():
+    assert airQuality._is_fresh(0, now=1_700_010_000) is False
+    assert airQuality._is_fresh(-100, now=1_700_010_000) is False
+
+
+def test_is_fresh_rejects_nan_and_inf():
+    assert airQuality._is_fresh(float("nan"), now=1_700_010_000) is False
+    assert airQuality._is_fresh(float("inf"), now=1_700_010_000) is False
+
+
+def test_is_fresh_accepts_slight_future_skew_within_tolerance():
+    now = 1_700_010_000
+    slightly_ahead = now + airQuality.FUTURE_SKEW_TOLERANCE_SEC
+    assert airQuality._is_fresh(slightly_ahead, now=now) is True
+
+
+def test_is_fresh_rejects_future_skew_beyond_tolerance():
+    now = 1_700_010_000
+    far_ahead = now + airQuality.FUTURE_SKEW_TOLERANCE_SEC + 1
+    assert airQuality._is_fresh(far_ahead, now=now) is False
+
+
+def test_is_fresh_accepts_numeric_string_epoch():
+    """Defensive: JSON always gives us a number, but don't crash on a string
+    that happens to parse cleanly."""
+    now = 1_700_010_000
+    assert airQuality._is_fresh(str(now - 60), now=now) is True

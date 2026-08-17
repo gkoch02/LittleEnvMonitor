@@ -6,6 +6,8 @@ An air quality monitor for a Raspberry Pi Zero driving a [Waveshare 2.13" black/
 
 Pulls PM2.5, PM10, temperature, and humidity from a [PurpleAir](https://www2.purpleair.com) sensor via the PurpleAir API, classifies the AQI, and renders it to the display every 30 minutes during the day (08:00–21:30). If the live fetch fails, the script falls back to the last cached reading (the full payload, with the header relabelled `[CACHED]`) so the panel keeps showing useful data through transient outages.
 
+PurpleAir's `last_seen` timestamp is checked on every fetch: a sample older than `FRESHNESS_THRESHOLD_SEC` (60 minutes), missing, malformed, or skewed suspiciously far into the future is treated the same as a failed fetch — it's never shown as a live update, cached, or used to advance the heartbeat. The panel falls back to the previous `[CACHED]` reading instead, so a sensor that's silently stopped reporting (while the API keeps serving its last known value) doesn't masquerade as fresh data.
+
 ### Themes
 
 The layout is selectable via `[display] theme` in `airquality.conf`. Three variants ship today:
@@ -92,6 +94,8 @@ The timer only fires between 08:00 and 21:30, so the heartbeat will naturally go
 ## Schedule
 
 Runs every 30 minutes between 08:00 and 21:30 via a systemd timer (no overnight refreshes). On each tick the script either renders a fresh reading or — if PurpleAir is unreachable — re-renders the last cached reading marked `[CACHED]`, so the display keeps showing useful data through transient outages.
+
+The timer unit sets `Persistent=true` so a missed daytime tick (e.g. the Pi was powered off) is replayed once it's back up. `airQuality.py` itself also checks the wall-clock window before doing anything — if a catch-up run happens to land outside 08:00–21:30 (say the Pi was off at 21:30 and boots back up at 23:00), it exits immediately without touching PurpleAir or the panel, so the "no overnight refreshes" promise holds even after downtime.
 
 To trigger a manual run and watch logs:
 

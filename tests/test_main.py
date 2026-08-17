@@ -7,10 +7,17 @@ function is replaced with a recorder fixture — the e-ink draw is exercised in
 its own dedicated tests (or on hardware), not here.
 """
 import json
+import time
+from datetime import datetime
 
 import pytest
 
 import airQuality
+
+# Captured before any test monkeypatches airQuality._within_wake_window (the
+# autouse fixture below stubs it out for the rest of this file) so the
+# TestWakeWindowGuard boundary tests can still exercise the real function.
+_real_within_wake_window = airQuality._within_wake_window
 
 
 @pytest.fixture
@@ -58,14 +65,28 @@ def display_recorder(monkeypatch):
     return calls
 
 
-def _purple_payload(pm25=20.0, pm10=22.0, temp=70, humidity=40):
+def _purple_payload(pm25=20.0, pm10=22.0, temp=70, humidity=40, last_seen_epoch=...):
+    # `...` sentinel (rather than None) lets callers explicitly request
+    # last_seen_epoch=None (missing) without accidentally getting "fresh now".
+    if last_seen_epoch is ...:
+        last_seen_epoch = time.time()
     return {
         "PM2.5": pm25,
         "PM10": pm10,
         "Temp": temp,
         "Humidity": humidity,
         "Time": "12:00 PM",
+        "LastSeenEpoch": last_seen_epoch,
     }
+
+
+@pytest.fixture(autouse=True)
+def _always_in_wake_window(monkeypatch):
+    """Most tests in this file exercise fetch/display logic, not the
+    wake-window guard — pin `main()`'s wake-window check to always pass so
+    those tests don't become time-of-day flaky. The `TestWakeWindowGuard`
+    tests below override this per-test to exercise the guard itself."""
+    monkeypatch.setattr(airQuality, "_within_wake_window", lambda now: True)
 
 
 def test_live_success_writes_cache_and_heartbeat(state_dir, conf, display_recorder, monkeypatch):
@@ -561,3 +582,232 @@ def test_trend_symbol_plus_only_on_strictly_greater_pm25(
     )
     airQuality.main([])
     assert display_recorder[-1]["trend_symbol"] == "+"
+
+
+# --- Stale PurpleAir sample handling (issue #17) ---------------------------
+
+
+def test_stale_purpleair_sample_falls_back_to_cache(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """A `last_seen` older than FRESHNESS_THRESHOLD_SEC must not be treated as
+    a live update: no heartbeat, no advancing the cache to the stale payload,
+    and the previous cached reading gets rendered as [CACHED]."""
+    cache_dir = state_dir / "airquality"
+    cache_dir.mkdir(parents=True)
+    cache_dir_json = cache_dir / "last_reading.json"
+    cache_dir_json.write_text(json.dumps(_purple_payload(pm25=11.0)))
+
+    stale_epoch = time.time() - airQuality.FRESHNESS_THRESHOLD_SEC - 1
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(pm25=99.0, last_seen_epoch=stale_epoch),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 1
+    assert len(display_recorder) == 1
+    assert display_recorder[0]["stale"] is True
+    # The [CACHED] render shows the *previous* good reading, not the stale
+    # PM2.5=99.0 payload that just came back.
+    assert display_recorder[0]["data"]["PM2.5"] == 11.0
+    assert not (state_dir / "airquality" / "heartbeat").exists()
+    # Cache on disk must still hold the old reading — a stale sample must
+    # never overwrite it.
+    assert json.loads(cache_dir_json.read_text())["PM2.5"] == 11.0
+
+
+def test_stale_purpleair_sample_no_cache_returns_one_without_drawing(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    stale_epoch = time.time() - airQuality.FRESHNESS_THRESHOLD_SEC - 1
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(last_seen_epoch=stale_epoch),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 1
+    assert display_recorder == []
+    assert not (state_dir / "airquality" / "heartbeat").exists()
+
+
+def test_fresh_purpleair_sample_at_threshold_boundary_is_accepted(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """Exactly at FRESHNESS_THRESHOLD_SEC is still fresh (<=, not <)."""
+    # Pin time.time() so the boundary is exact — main() and this test would
+    # otherwise call the real clock microseconds apart, occasionally tipping
+    # the sample just past the threshold and flaking the assertion.
+    fixed_now = 1_700_010_000.0
+    monkeypatch.setattr(airQuality.time, "time", lambda: fixed_now)
+    boundary_epoch = fixed_now - airQuality.FRESHNESS_THRESHOLD_SEC
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(last_seen_epoch=boundary_epoch),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 0
+    assert display_recorder[0]["stale"] is False
+    assert (state_dir / "airquality" / "heartbeat").is_file()
+
+
+def test_missing_last_seen_epoch_treated_as_stale(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """A payload with no LastSeenEpoch at all (e.g. PurpleAir dropped the
+    field) is untrustworthy, not "extra fresh" — same handling as stale."""
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(last_seen_epoch=None),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 1
+    assert display_recorder == []
+    assert not (state_dir / "airquality" / "heartbeat").exists()
+
+
+def test_malformed_last_seen_epoch_treated_as_stale(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(last_seen_epoch="not-a-number"),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 1
+    assert display_recorder == []
+    assert not (state_dir / "airquality" / "heartbeat").exists()
+
+
+def test_future_skewed_last_seen_treated_as_stale(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """A last_seen far in the future (clock skew / bad data) can't be a real
+    sample — treat it as untrustworthy rather than "extra fresh"."""
+    future_epoch = time.time() + airQuality.FUTURE_SKEW_TOLERANCE_SEC + 3600
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(last_seen_epoch=future_epoch),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 1
+    assert display_recorder == []
+    assert not (state_dir / "airquality" / "heartbeat").exists()
+
+
+def test_slightly_future_last_seen_within_skew_tolerance_is_fresh(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """Small clock skew (well within tolerance) shouldn't reject a genuinely
+    fresh sample."""
+    slightly_future_epoch = time.time() + 30  # 30s ahead, well under tolerance
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(last_seen_epoch=slightly_future_epoch),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 0
+    assert display_recorder[0]["stale"] is False
+
+
+def test_stale_sample_summary_logs_cache_fallback_branch(
+    state_dir, conf, display_recorder, monkeypatch, caplog
+):
+    """The summary log path for a stale-sample skip must match the ordinary
+    fetch-failure cache-fallback branch, so monitoring doesn't need a third
+    code path to watch."""
+    import logging
+
+    cache_dir = state_dir / "airquality"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "last_reading.json").write_text(json.dumps(_purple_payload(pm25=15.0)))
+
+    stale_epoch = time.time() - airQuality.FRESHNESS_THRESHOLD_SEC - 1
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(pm25=50.0, last_seen_epoch=stale_epoch),
+    )
+
+    with caplog.at_level(logging.INFO, logger="airquality"):
+        rc = airQuality.main([])
+
+    assert rc == 1
+    summary_msgs = [m for m in caplog.messages if m.startswith("summary path=")]
+    assert len(summary_msgs) == 1
+    assert "path=cache_fallback" in summary_msgs[0]
+    assert "pm25=15.0" in summary_msgs[0]
+
+
+# --- Wake-window guard (issue #16) ------------------------------------------
+
+
+class TestWakeWindowGuard:
+    """`main()` refuses to fetch/display outside 08:00-21:30 local time, so a
+    systemd Persistent=true catch-up run that lands overnight is a no-op."""
+
+    def test_outside_window_skips_without_fetching(
+        self, state_dir, conf, display_recorder, monkeypatch
+    ):
+        monkeypatch.setattr(airQuality, "_within_wake_window", lambda now: False)
+        fetch_calls = []
+        monkeypatch.setattr(
+            airQuality, "fetch_purpleair_data",
+            lambda *a, **kw: fetch_calls.append(1) or _purple_payload(),
+        )
+
+        rc = airQuality.main([])
+
+        assert rc == 0
+        assert fetch_calls == []
+        assert display_recorder == []
+        assert not (state_dir / "airquality" / "heartbeat").exists()
+
+    def test_dry_run_bypasses_the_guard(self, tmp_path, state_dir, conf, monkeypatch):
+        monkeypatch.setattr(airQuality, "_within_wake_window", lambda now: False)
+        monkeypatch.setattr(
+            airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload(),
+        )
+        out = tmp_path / "preview.png"
+
+        rc = airQuality.main(["--dry-run", str(out)])
+
+        assert rc == 0
+        assert out.is_file()
+
+    def test_within_window_boundaries_are_inclusive(self):
+        assert _real_within_wake_window(datetime(2026, 8, 17, 8, 0)) is True
+        assert _real_within_wake_window(datetime(2026, 8, 17, 21, 30)) is True
+        assert _real_within_wake_window(datetime(2026, 8, 17, 14, 15)) is True
+
+    def test_outside_window_boundaries_are_excluded(self):
+        assert _real_within_wake_window(datetime(2026, 8, 17, 7, 59)) is False
+        assert _real_within_wake_window(datetime(2026, 8, 17, 21, 31)) is False
+        assert _real_within_wake_window(datetime(2026, 8, 17, 2, 0)) is False
+
+    def test_summary_logs_skipped_branch(
+        self, state_dir, conf, display_recorder, monkeypatch, caplog
+    ):
+        import logging
+
+        monkeypatch.setattr(airQuality, "_within_wake_window", lambda now: False)
+
+        with caplog.at_level(logging.INFO, logger="airquality"):
+            rc = airQuality.main([])
+
+        assert rc == 0
+        summary_msgs = [m for m in caplog.messages if m.startswith("summary path=")]
+        assert len(summary_msgs) == 1
+        assert "path=skipped_outside_window" in summary_msgs[0]
