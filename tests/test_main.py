@@ -8,16 +8,10 @@ its own dedicated tests (or on hardware), not here.
 """
 import json
 import time
-from datetime import datetime
 
 import pytest
 
 import airQuality
-
-# Captured before any test monkeypatches airQuality._within_wake_window (the
-# autouse fixture below stubs it out for the rest of this file) so the
-# TestWakeWindowGuard boundary tests can still exercise the real function.
-_real_within_wake_window = airQuality._within_wake_window
 
 
 @pytest.fixture
@@ -78,15 +72,6 @@ def _purple_payload(pm25=20.0, pm10=22.0, temp=70, humidity=40, last_seen_epoch=
         "Time": "12:00 PM",
         "LastSeenEpoch": last_seen_epoch,
     }
-
-
-@pytest.fixture(autouse=True)
-def _always_in_wake_window(monkeypatch):
-    """Most tests in this file exercise fetch/display logic, not the
-    wake-window guard — pin `main()`'s wake-window check to always pass so
-    those tests don't become time-of-day flaky. The `TestWakeWindowGuard`
-    tests below override this per-test to exercise the guard itself."""
-    monkeypatch.setattr(airQuality, "_within_wake_window", lambda now: True)
 
 
 def test_live_success_writes_cache_and_heartbeat(state_dir, conf, display_recorder, monkeypatch):
@@ -749,65 +734,3 @@ def test_stale_sample_summary_logs_cache_fallback_branch(
     assert len(summary_msgs) == 1
     assert "path=cache_fallback" in summary_msgs[0]
     assert "pm25=15.0" in summary_msgs[0]
-
-
-# --- Wake-window guard (issue #16) ------------------------------------------
-
-
-class TestWakeWindowGuard:
-    """`main()` refuses to fetch/display outside 08:00-21:30 local time, so a
-    systemd Persistent=true catch-up run that lands overnight is a no-op."""
-
-    def test_outside_window_skips_without_fetching(
-        self, state_dir, conf, display_recorder, monkeypatch
-    ):
-        monkeypatch.setattr(airQuality, "_within_wake_window", lambda now: False)
-        fetch_calls = []
-        monkeypatch.setattr(
-            airQuality, "fetch_purpleair_data",
-            lambda *a, **kw: fetch_calls.append(1) or _purple_payload(),
-        )
-
-        rc = airQuality.main([])
-
-        assert rc == 0
-        assert fetch_calls == []
-        assert display_recorder == []
-        assert not (state_dir / "airquality" / "heartbeat").exists()
-
-    def test_dry_run_bypasses_the_guard(self, tmp_path, state_dir, conf, monkeypatch):
-        monkeypatch.setattr(airQuality, "_within_wake_window", lambda now: False)
-        monkeypatch.setattr(
-            airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload(),
-        )
-        out = tmp_path / "preview.png"
-
-        rc = airQuality.main(["--dry-run", str(out)])
-
-        assert rc == 0
-        assert out.is_file()
-
-    def test_within_window_boundaries_are_inclusive(self):
-        assert _real_within_wake_window(datetime(2026, 8, 17, 8, 0)) is True
-        assert _real_within_wake_window(datetime(2026, 8, 17, 21, 30)) is True
-        assert _real_within_wake_window(datetime(2026, 8, 17, 14, 15)) is True
-
-    def test_outside_window_boundaries_are_excluded(self):
-        assert _real_within_wake_window(datetime(2026, 8, 17, 7, 59)) is False
-        assert _real_within_wake_window(datetime(2026, 8, 17, 21, 31)) is False
-        assert _real_within_wake_window(datetime(2026, 8, 17, 2, 0)) is False
-
-    def test_summary_logs_skipped_branch(
-        self, state_dir, conf, display_recorder, monkeypatch, caplog
-    ):
-        import logging
-
-        monkeypatch.setattr(airQuality, "_within_wake_window", lambda now: False)
-
-        with caplog.at_level(logging.INFO, logger="airquality"):
-            rc = airQuality.main([])
-
-        assert rc == 0
-        summary_msgs = [m for m in caplog.messages if m.startswith("summary path=")]
-        assert len(summary_msgs) == 1
-        assert "path=skipped_outside_window" in summary_msgs[0]

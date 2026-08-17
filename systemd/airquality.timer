@@ -4,15 +4,16 @@ Description=Run Air Quality Monitor every 30 minutes, 8 AM – 9:30 PM
 [Timer]
 # Fire at :00 and :30 each hour from 08:00 through 21:30
 OnCalendar=*-*-* 08..21:00/30:00
-# Persistent=true replays one missed tick after downtime (e.g. the Pi was
-# off during a daytime tick), which is useful for daytime catch-up. If the
-# missed tick — and therefore the catch-up run — lands outside 08:00-21:30
-# (e.g. the Pi was off at 21:30 and boots at 23:00), that would otherwise
-# break the README's "no overnight refreshes" promise. airQuality.py's
-# main() guards against that itself (see _within_wake_window / issue #16):
-# it checks the wall-clock window before touching PurpleAir or the panel,
-# so an overnight catch-up run is a fast no-op, not a live refresh.
-Persistent=true
+# Deliberately no Persistent=true: this unit is strictly daytime-only (see
+# README "no overnight refreshes"). Persistent=true would replay one missed
+# tick immediately once the timer becomes active again — including outside
+# 08:00-21:30 if the Pi was off at a daytime tick and boots back up
+# overnight (e.g. off at 21:30, boots at 23:00) — which would fire a live
+# refresh at an undocumented hour (see issue #16). Without it, a missed
+# occurrence is simply skipped; the next real daytime tick runs normally.
+# A manual `systemctl start airquality.service` (or the dev-checkout
+# `.venv/bin/python airQuality.py`) always runs immediately regardless of
+# time of day — that's independent of this timer entirely.
 
 [Install]
 WantedBy=timers.target

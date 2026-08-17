@@ -65,13 +65,6 @@ FRESHNESS_THRESHOLD_SEC = 60 * 60
 # it's treated the same as stale/missing data rather than "extra fresh."
 FUTURE_SKEW_TOLERANCE_SEC = 5 * 60
 
-# Daytime run window that mirrors systemd/airquality.timer's OnCalendar
-# schedule (08:00 through 21:30, inclusive). main() checks this itself so a
-# systemd Persistent=true catch-up that fires late at night (e.g. the Pi was
-# off at 21:30 and boots at 23:00) is a fast no-op instead of an overnight
-# refresh — see README "no overnight refreshes" and issue #16.
-WAKE_WINDOW_START = (8, 0)
-WAKE_WINDOW_END = (21, 30)
 
 # epd2in13b_V4 is 122x250 native; we draw landscape so the panel is 250 wide.
 # Hard-coded so the dry-run path can render without importing the hardware
@@ -379,18 +372,6 @@ def _is_fresh(last_seen_epoch, now=None):
     if age < -FUTURE_SKEW_TOLERANCE_SEC:
         return False
     return age <= FRESHNESS_THRESHOLD_SEC
-
-
-def _within_wake_window(now, start=WAKE_WINDOW_START, end=WAKE_WINDOW_END):
-    """True when `now` (a datetime) falls inside the documented daytime run
-    window (08:00-21:30 inclusive local time), matching
-    systemd/airquality.timer's OnCalendar schedule.
-
-    Tuple comparison on (hour, minute) keeps this a simple, testable pure
-    function — see issue #16.
-    """
-    current = (now.hour, now.minute)
-    return start <= current <= end
 
 
 @contextmanager
@@ -797,19 +778,6 @@ def _parse_args(argv):
 def main(argv=None):
     args = _parse_args(argv)
     api_key, sensor_id, weather_coords, city, theme = load_config(CONF_PATH)
-
-    # Guard against systemd's Persistent=true replaying a missed tick outside
-    # the documented 08:00-21:30 window (e.g. the Pi was off at 21:30 and
-    # boots at 23:00) — that catch-up run becomes a no-op instead of an
-    # overnight refresh. --dry-run is a manual preview tool and always
-    # bypasses this, same spirit as --preview in the sibling repos.
-    if args.dry_run is None and not _within_wake_window(datetime.now()):
-        log.info(
-            "Outside the daytime run window (%02d:%02d-%02d:%02d); skipping catch-up run",
-            *WAKE_WINDOW_START, *WAKE_WINDOW_END,
-        )
-        _summary("skipped_outside_window")
-        return 0
 
     source = "purpleair"
     try:

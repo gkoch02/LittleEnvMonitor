@@ -95,7 +95,7 @@ The timer only fires between 08:00 and 21:30, so the heartbeat will naturally go
 
 Runs every 30 minutes between 08:00 and 21:30 via a systemd timer (no overnight refreshes). On each tick the script either renders a fresh reading or — if PurpleAir is unreachable — re-renders the last cached reading marked `[CACHED]`, so the display keeps showing useful data through transient outages.
 
-The timer unit sets `Persistent=true` so a missed daytime tick (e.g. the Pi was powered off) is replayed once it's back up. `airQuality.py` itself also checks the wall-clock window before doing anything — if a catch-up run happens to land outside 08:00–21:30 (say the Pi was off at 21:30 and boots back up at 23:00), it exits immediately without touching PurpleAir or the panel, so the "no overnight refreshes" promise holds even after downtime.
+The timer unit deliberately does not set `Persistent=true`: a missed daytime tick (e.g. the Pi was powered off) is simply skipped rather than replayed, so a Pi that boots back up overnight (say the Pi was off at 21:30 and boots back up at 23:00) doesn't trigger a live refresh at an undocumented hour — the "no overnight refreshes" promise holds even after downtime. The next scheduled daytime tick runs normally. A manual run (see below) always runs immediately regardless of time of day; it's independent of the timer.
 
 To trigger a manual run and watch logs:
 
