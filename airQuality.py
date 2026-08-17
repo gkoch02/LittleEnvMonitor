@@ -53,6 +53,19 @@ SLEEP_TIMEOUT_SEC = 10
 # 120s systemd TimeoutStartSec before we ever reached the cache fallback.
 RETRY_AFTER_CAP_SEC = 30
 
+# How old a PurpleAir sample's `last_seen` may be before we stop trusting it
+# as a live reading. PurpleAir sensors normally report every ~2 minutes; a
+# sample this old usually means the sensor (or PurpleAir's ingest pipeline)
+# is stuck while the API keeps serving its last known value. 60 minutes
+# comfortably clears a couple of missed 30-minute timer ticks before we
+# start distrusting the data (see issue #17).
+FRESHNESS_THRESHOLD_SEC = 60 * 60
+# Small allowance for clock skew between this Pi and PurpleAir's servers.
+# A `last_seen` further in the future than this can't be a real sample, so
+# it's treated the same as stale/missing data rather than "extra fresh."
+FUTURE_SKEW_TOLERANCE_SEC = 5 * 60
+
+
 # epd2in13b_V4 is 122x250 native; we draw landscape so the panel is 250 wide.
 # Hard-coded so the dry-run path can render without importing the hardware
 # module — the EPD class's `width`/`height` are the same values anyway.
@@ -228,6 +241,17 @@ def pm25_to_aqi(pm25):
     return 500
 
 
+class StalePurpleAirDataError(RuntimeError):
+    """Raised when a PurpleAir response parses fine but `last_seen` is too old
+    (or missing/malformed/future-skewed) to trust as a live update.
+
+    Deliberately a RuntimeError subclass so it's caught by the same broad
+    `except Exception` in main() that handles outright fetch failures — a
+    stale sample gets exactly the same cache-fallback treatment as a network
+    error, per issue #17.
+    """
+
+
 def fetch_purpleair_data(sensor_id, api_key, retries=3, timeout=15):
     if retries < 1:
         raise ValueError(f"retries must be >= 1, got {retries}")
@@ -280,6 +304,11 @@ def fetch_purpleair_data(sensor_id, api_key, retries=3, timeout=15):
                         if last_seen
                         else "N/A"
                     ),
+                    # Raw epoch, kept separately from the human "Time" string
+                    # above so main() can validate freshness (issue #17). A
+                    # falsy last_seen (missing or 0 — "no reading yet")
+                    # becomes None, same treatment as the "Time" fallback.
+                    "LastSeenEpoch": last_seen if last_seen else None,
                 }
         if attempt < retries:
             # Backoff between attempts: 2/4/8s (cap 8s). With retries=3 the
@@ -318,6 +347,31 @@ def fetch_local_weather(latitude, longitude, timeout=10):
 
 def _is_missing(value):
     return value is None or value == "N/A"
+
+
+def _is_fresh(last_seen_epoch, now=None):
+    """True if `last_seen_epoch` is a trustworthy, recent PurpleAir sample.
+
+    Missing/malformed values (None, "N/A", non-numeric, non-finite,
+    non-positive) are treated as untrustworthy rather than fresh — we can't
+    verify their age, so the safest assumption is "not fresh." Samples
+    skewed more than FUTURE_SKEW_TOLERANCE_SEC into the future get the same
+    treatment: a `last_seen` that far ahead of our clock can't be a real
+    reading. Otherwise fresh iff the sample is no older than
+    FRESHNESS_THRESHOLD_SEC. See issue #17.
+    """
+    if now is None:
+        now = time.time()
+    try:
+        last_seen = float(last_seen_epoch)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(last_seen) or last_seen <= 0:
+        return False
+    age = now - last_seen
+    if age < -FUTURE_SKEW_TOLERANCE_SEC:
+        return False
+    return age <= FRESHNESS_THRESHOLD_SEC
 
 
 @contextmanager
@@ -724,9 +778,20 @@ def _parse_args(argv):
 def main(argv=None):
     args = _parse_args(argv)
     api_key, sensor_id, weather_coords, city, theme = load_config(CONF_PATH)
+
     source = "purpleair"
     try:
         data = fetch_purpleair_data(sensor_id, api_key)
+        last_seen_epoch = data.get("LastSeenEpoch")
+        if not _is_fresh(last_seen_epoch):
+            # Same handling as a fetch failure: don't treat a stale/
+            # untrustworthy sample as a live update. Falls through to the
+            # except block below, which renders the *previous* cache as
+            # [CACHED] (not this stale payload) and skips the heartbeat.
+            raise StalePurpleAirDataError(
+                f"PurpleAir last_seen={last_seen_epoch!r} is stale or "
+                f"untrustworthy (threshold={FRESHNESS_THRESHOLD_SEC}s)"
+            )
         if _is_missing(data["Temp"]) or _is_missing(data["Humidity"]):
             if weather_coords is not None:
                 try:

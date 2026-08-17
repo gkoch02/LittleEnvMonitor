@@ -7,6 +7,7 @@ function is replaced with a recorder fixture — the e-ink draw is exercised in
 its own dedicated tests (or on hardware), not here.
 """
 import json
+import time
 
 import pytest
 
@@ -58,13 +59,18 @@ def display_recorder(monkeypatch):
     return calls
 
 
-def _purple_payload(pm25=20.0, pm10=22.0, temp=70, humidity=40):
+def _purple_payload(pm25=20.0, pm10=22.0, temp=70, humidity=40, last_seen_epoch=...):
+    # `...` sentinel (rather than None) lets callers explicitly request
+    # last_seen_epoch=None (missing) without accidentally getting "fresh now".
+    if last_seen_epoch is ...:
+        last_seen_epoch = time.time()
     return {
         "PM2.5": pm25,
         "PM10": pm10,
         "Temp": temp,
         "Humidity": humidity,
         "Time": "12:00 PM",
+        "LastSeenEpoch": last_seen_epoch,
     }
 
 
@@ -561,3 +567,170 @@ def test_trend_symbol_plus_only_on_strictly_greater_pm25(
     )
     airQuality.main([])
     assert display_recorder[-1]["trend_symbol"] == "+"
+
+
+# --- Stale PurpleAir sample handling (issue #17) ---------------------------
+
+
+def test_stale_purpleair_sample_falls_back_to_cache(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """A `last_seen` older than FRESHNESS_THRESHOLD_SEC must not be treated as
+    a live update: no heartbeat, no advancing the cache to the stale payload,
+    and the previous cached reading gets rendered as [CACHED]."""
+    cache_dir = state_dir / "airquality"
+    cache_dir.mkdir(parents=True)
+    cache_dir_json = cache_dir / "last_reading.json"
+    cache_dir_json.write_text(json.dumps(_purple_payload(pm25=11.0)))
+
+    stale_epoch = time.time() - airQuality.FRESHNESS_THRESHOLD_SEC - 1
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(pm25=99.0, last_seen_epoch=stale_epoch),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 1
+    assert len(display_recorder) == 1
+    assert display_recorder[0]["stale"] is True
+    # The [CACHED] render shows the *previous* good reading, not the stale
+    # PM2.5=99.0 payload that just came back.
+    assert display_recorder[0]["data"]["PM2.5"] == 11.0
+    assert not (state_dir / "airquality" / "heartbeat").exists()
+    # Cache on disk must still hold the old reading — a stale sample must
+    # never overwrite it.
+    assert json.loads(cache_dir_json.read_text())["PM2.5"] == 11.0
+
+
+def test_stale_purpleair_sample_no_cache_returns_one_without_drawing(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    stale_epoch = time.time() - airQuality.FRESHNESS_THRESHOLD_SEC - 1
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(last_seen_epoch=stale_epoch),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 1
+    assert display_recorder == []
+    assert not (state_dir / "airquality" / "heartbeat").exists()
+
+
+def test_fresh_purpleair_sample_at_threshold_boundary_is_accepted(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """Exactly at FRESHNESS_THRESHOLD_SEC is still fresh (<=, not <)."""
+    # Pin time.time() so the boundary is exact — main() and this test would
+    # otherwise call the real clock microseconds apart, occasionally tipping
+    # the sample just past the threshold and flaking the assertion.
+    fixed_now = 1_700_010_000.0
+    monkeypatch.setattr(airQuality.time, "time", lambda: fixed_now)
+    boundary_epoch = fixed_now - airQuality.FRESHNESS_THRESHOLD_SEC
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(last_seen_epoch=boundary_epoch),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 0
+    assert display_recorder[0]["stale"] is False
+    assert (state_dir / "airquality" / "heartbeat").is_file()
+
+
+def test_missing_last_seen_epoch_treated_as_stale(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """A payload with no LastSeenEpoch at all (e.g. PurpleAir dropped the
+    field) is untrustworthy, not "extra fresh" — same handling as stale."""
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(last_seen_epoch=None),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 1
+    assert display_recorder == []
+    assert not (state_dir / "airquality" / "heartbeat").exists()
+
+
+def test_malformed_last_seen_epoch_treated_as_stale(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(last_seen_epoch="not-a-number"),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 1
+    assert display_recorder == []
+    assert not (state_dir / "airquality" / "heartbeat").exists()
+
+
+def test_future_skewed_last_seen_treated_as_stale(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """A last_seen far in the future (clock skew / bad data) can't be a real
+    sample — treat it as untrustworthy rather than "extra fresh"."""
+    future_epoch = time.time() + airQuality.FUTURE_SKEW_TOLERANCE_SEC + 3600
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(last_seen_epoch=future_epoch),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 1
+    assert display_recorder == []
+    assert not (state_dir / "airquality" / "heartbeat").exists()
+
+
+def test_slightly_future_last_seen_within_skew_tolerance_is_fresh(
+    state_dir, conf, display_recorder, monkeypatch
+):
+    """Small clock skew (well within tolerance) shouldn't reject a genuinely
+    fresh sample."""
+    slightly_future_epoch = time.time() + 30  # 30s ahead, well under tolerance
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(last_seen_epoch=slightly_future_epoch),
+    )
+
+    rc = airQuality.main([])
+
+    assert rc == 0
+    assert display_recorder[0]["stale"] is False
+
+
+def test_stale_sample_summary_logs_cache_fallback_branch(
+    state_dir, conf, display_recorder, monkeypatch, caplog
+):
+    """The summary log path for a stale-sample skip must match the ordinary
+    fetch-failure cache-fallback branch, so monitoring doesn't need a third
+    code path to watch."""
+    import logging
+
+    cache_dir = state_dir / "airquality"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "last_reading.json").write_text(json.dumps(_purple_payload(pm25=15.0)))
+
+    stale_epoch = time.time() - airQuality.FRESHNESS_THRESHOLD_SEC - 1
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(pm25=50.0, last_seen_epoch=stale_epoch),
+    )
+
+    with caplog.at_level(logging.INFO, logger="airquality"):
+        rc = airQuality.main([])
+
+    assert rc == 1
+    summary_msgs = [m for m in caplog.messages if m.startswith("summary path=")]
+    assert len(summary_msgs) == 1
+    assert "path=cache_fallback" in summary_msgs[0]
+    assert "pm25=15.0" in summary_msgs[0]

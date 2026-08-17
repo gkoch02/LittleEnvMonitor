@@ -6,6 +6,7 @@ and heartbeat writes (the operator asked for a one-off preview, not a state
 update).
 """
 import json
+import time
 
 import pytest
 
@@ -33,6 +34,7 @@ def conf(tmp_path, monkeypatch):
 def _payload(pm25=20.0):
     return {
         "PM2.5": pm25, "PM10": 22.0, "Temp": 70, "Humidity": 40, "Time": "12:00 PM",
+        "LastSeenEpoch": time.time(),
     }
 
 
