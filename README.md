@@ -150,4 +150,10 @@ CI runs the same suite on every push and pull request across Python 3.10, 3.11, 
 
 ## License
 
-Project code: MIT. Waveshare library files in `waveshare_epd/` are copyright Waveshare, also MIT licensed.
+Project code — `airQuality.py`, `tests/`, `deploy.sh`, `docs/`, `systemd/` — is MIT
+licensed; see [`LICENSE`](LICENSE). Third-party components keep their own terms:
+
+- `waveshare_epd/` — MIT, © Waveshare (see `waveshare_epd/UPSTREAM.md`).
+- `fonts/Inter-Bold.ttf` — SIL Open Font License 1.1, see `fonts/OFL-Inter.txt`.
+- `fonts/Fredoka-VariableFont_wdth,wght.ttf` — SIL Open Font License 1.1, see
+  `fonts/OFL-Fredoka.txt`.
