@@ -150,8 +150,9 @@ CI runs the same suite on every push and pull request across Python 3.10, 3.11, 
 
 ## License
 
-Project code — `airQuality.py`, `tests/`, `deploy.sh`, `docs/`, `systemd/` — is MIT
-licensed; see [`LICENSE`](LICENSE). Third-party components keep their own terms:
+This repository is MIT licensed; see [`LICENSE`](LICENSE). The grant covers
+everything here except the vendored third-party material below, which keeps its
+own terms:
 
 - `waveshare_epd/` — MIT, © Waveshare (see `waveshare_epd/UPSTREAM.md`).
 - `fonts/Inter-Bold.ttf` — SIL Open Font License 1.1, see `fonts/OFL-Inter.txt`.
