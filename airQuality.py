@@ -12,14 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import requests
-from PIL import Image, ImageDraw, ImageFont
-
-# The Waveshare hardware import used to live here at module scope, paired with
-# a sys.path.insert. Both moved into display_air_quality() so a dev box (no
-# RPi.GPIO/spidev installed, no test-time stub) can still `import airQuality`
-# for the --dry-run renderer. When run as a script, Python already adds the
-# script's directory to sys.path[0], so the lazy import resolves the vendored
-# package without help.
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -58,7 +51,7 @@ RETRY_AFTER_CAP_SEC = 30
 # sample this old usually means the sensor (or PurpleAir's ingest pipeline)
 # is stuck while the API keeps serving its last known value. 60 minutes
 # comfortably clears a couple of missed 30-minute timer ticks before we
-# start distrusting the data (see issue #17).
+# start distrusting the data.
 FRESHNESS_THRESHOLD_SEC = 60 * 60
 # Small allowance for clock skew between this Pi and PurpleAir's servers.
 # A `last_seen` further in the future than this can't be a real sample, so
@@ -81,16 +74,16 @@ PANEL_HEIGHT = 122
 SUPPORTED_THEMES = ("default", "minimal", "fredoka")
 DEFAULT_THEME = "default"
 
-# EPA PM2.5 → AQI breakpoints (40 CFR Part 58 App. G, 2012 revision). Matches
-# the bands `classify_aqi` already uses, so the numeric AQI and the category
-# label always agree.
+# EPA PM2.5 → AQI breakpoints (40 CFR Part 58 App. G, 2012 revision), with the
+# category label and ink color for each band. Both `pm25_to_aqi` and
+# `classify_aqi` read this one table, so the number and the label can't disagree.
 _PM25_AQI_BREAKPOINTS = (
-    (0.0, 12.0, 0, 50),
-    (12.1, 35.4, 51, 100),
-    (35.5, 55.4, 101, 150),
-    (55.5, 150.4, 151, 200),
-    (150.5, 250.4, 201, 300),
-    (250.5, 500.4, 301, 500),
+    (0.0, 12.0, 0, 50, "Good", "black"),
+    (12.1, 35.4, 51, 100, "Moderate", "black"),
+    (35.5, 55.4, 101, 150, "Unhealthy for Sensitive Groups", "red"),
+    (55.5, 150.4, 151, 200, "Unhealthy", "red"),
+    (150.5, 250.4, 201, 300, "Very Unhealthy", "red"),
+    (250.5, 500.4, 301, 500, "Hazardous", "red"),
 )
 
 
@@ -182,36 +175,22 @@ def _load_font(size, font_path=FONT_PATH_BOLD):
 def classify_aqi(pm25):
     """Return (category, ink_color) for a PM2.5 reading.
 
-    Truncates the input to one decimal per EPA spec before band lookup so the
-    category always agrees with `pm25_to_aqi(pm25)` on inputs like 12.09 (where
-    rounding/truncation flips the band). For invalid input (NaN, infinite,
-    negative, non-numeric) returns ("Unknown", "black") — pairs with
-    `pm25_to_aqi` returning None on the same inputs so the display can render
-    a sensible degraded state instead of contradictory text.
+    Returns ("Unknown", "black") for invalid input, the same inputs for which
+    `pm25_to_aqi` returns None.
     """
     c = _truncate_pm25(pm25)
     if c is None:
         return "Unknown", "black"
-    if c <= 12:
-        return "Good", "black"
-    if c <= 35.4:
-        return "Moderate", "black"
-    if c <= 55.4:
-        return "Unhealthy for Sensitive Groups", "red"
-    if c <= 150.4:
-        return "Unhealthy", "red"
-    if c <= 250.4:
-        return "Very Unhealthy", "red"
+    for _, pm_hi, _, _, category, color in _PM25_AQI_BREAKPOINTS:
+        if c <= pm_hi:
+            return category, color
     return "Hazardous", "red"
 
 
 def _truncate_pm25(pm25):
     """EPA-spec normalization: truncate to one decimal, reject invalid input.
 
-    Single source of truth for both `pm25_to_aqi` and `classify_aqi` so the
-    numeric AQI and the category label can never disagree on which band a
-    reading falls into. Returns None for NaN, infinite, negative, or
-    non-numeric input.
+    Returns None for NaN, infinite, negative, or non-numeric input.
     """
     try:
         c = float(pm25)
@@ -235,21 +214,15 @@ def pm25_to_aqi(pm25):
     c = _truncate_pm25(pm25)
     if c is None:
         return None
-    for pm_lo, pm_hi, aqi_lo, aqi_hi in _PM25_AQI_BREAKPOINTS:
+    for pm_lo, pm_hi, aqi_lo, aqi_hi, _, _ in _PM25_AQI_BREAKPOINTS:
         if pm_lo <= c <= pm_hi:
             return round((aqi_hi - aqi_lo) / (pm_hi - pm_lo) * (c - pm_lo) + aqi_lo)
     return 500
 
 
 class StalePurpleAirDataError(RuntimeError):
-    """Raised when a PurpleAir response parses fine but `last_seen` is too old
-    (or missing/malformed/future-skewed) to trust as a live update.
-
-    Deliberately a RuntimeError subclass so it's caught by the same broad
-    `except Exception` in main() that handles outright fetch failures — a
-    stale sample gets exactly the same cache-fallback treatment as a network
-    error, per issue #17.
-    """
+    """PurpleAir `last_seen` is too old (or missing/malformed/future-skewed) to
+    trust; main() gives it the same cache-fallback treatment as a fetch error."""
 
 
 def fetch_purpleair_data(sensor_id, api_key, retries=3, timeout=15):
@@ -305,9 +278,8 @@ def fetch_purpleair_data(sensor_id, api_key, retries=3, timeout=15):
                         else "N/A"
                     ),
                     # Raw epoch, kept separately from the human "Time" string
-                    # above so main() can validate freshness (issue #17). A
-                    # falsy last_seen (missing or 0 — "no reading yet")
-                    # becomes None, same treatment as the "Time" fallback.
+                    # above so main() can validate freshness. A falsy
+                    # last_seen (missing or 0 — "no reading yet") becomes None.
                     "LastSeenEpoch": last_seen if last_seen else None,
                 }
         if attempt < retries:
@@ -358,7 +330,7 @@ def _is_fresh(last_seen_epoch, now=None):
     skewed more than FUTURE_SKEW_TOLERANCE_SEC into the future get the same
     treatment: a `last_seen` that far ahead of our clock can't be a real
     reading. Otherwise fresh iff the sample is no older than
-    FRESHNESS_THRESHOLD_SEC. See issue #17.
+    FRESHNESS_THRESHOLD_SEC.
     """
     if now is None:
         now = time.time()
@@ -436,6 +408,10 @@ def _measure(font, text):
     return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
 
+def _hero_text(aqi_value):
+    return str(aqi_value) if aqi_value is not None else "--"
+
+
 def _draw_aqi_gauge(draw_black, draw_red, x0, y0, x1, y1, aqi_value):
     """Outlined bar with red fill proportional to AQI / 300 (clamped).
 
@@ -501,21 +477,14 @@ def _draw_default_body(
         (hero_x_center - label_w // 2, 31), "AQI", font=font_label, fill=0,
     )
 
-    hero_text = str(aqi_value) if aqi_value is not None else "--"
+    hero_layer = draw_red if cat_color == "red" else draw_black
+    hero_text = _hero_text(aqi_value)
     hero_w, _ = _measure(font_hero, hero_text)
-    hero_pos = (hero_x_center - hero_w // 2, 41)
-    if cat_color == "red":
-        draw_red.text(hero_pos, hero_text, font=font_hero, fill=0)
-    else:
-        draw_black.text(hero_pos, hero_text, font=font_hero, fill=0)
+    hero_layer.text((hero_x_center - hero_w // 2, 41), hero_text, font=font_hero, fill=0)
 
     cat_short = _CATEGORY_SHORT.get(category, category)
     cat_w, _ = _measure(font_cat, cat_short)
-    cat_pos = (hero_x_center - cat_w // 2, 84)
-    if cat_color == "red":
-        draw_red.text(cat_pos, cat_short, font=font_cat, fill=0)
-    else:
-        draw_black.text(cat_pos, cat_short, font=font_cat, fill=0)
+    hero_layer.text((hero_x_center - cat_w // 2, 84), cat_short, font=font_cat, fill=0)
 
 
 def _draw_minimal_body(
@@ -532,27 +501,15 @@ def _draw_minimal_body(
     font_cat = _load_font(14, font_path)
 
     center_x = width // 2
+    hero_layer = draw_red if cat_color == "red" else draw_black
 
-    hero_text = str(aqi_value) if aqi_value is not None else "--"
+    hero_text = _hero_text(aqi_value)
     hero_w, _ = _measure(font_hero, hero_text)
-    hero_pos = (center_x - hero_w // 2, 30)
-    if cat_color == "red":
-        draw_red.text(hero_pos, hero_text, font=font_hero, fill=0)
-    else:
-        draw_black.text(hero_pos, hero_text, font=font_hero, fill=0)
+    hero_layer.text((center_x - hero_w // 2, 30), hero_text, font=font_hero, fill=0)
 
-    # Use the full category name when it fits; fall back to the short form
-    # only if it would overrun the panel width.
-    cat_text = category
-    cat_w, _ = _measure(font_cat, cat_text)
-    if cat_w > width - 20:
-        cat_text = _CATEGORY_SHORT.get(category, category)
-        cat_w, _ = _measure(font_cat, cat_text)
-    cat_pos = (center_x - cat_w // 2, 88)
-    if cat_color == "red":
-        draw_red.text(cat_pos, cat_text, font=font_cat, fill=0)
-    else:
-        draw_black.text(cat_pos, cat_text, font=font_cat, fill=0)
+    # The full category name fits here (the longest, USG, is ~213px of 250).
+    cat_w, _ = _measure(font_cat, category)
+    hero_layer.text((center_x - cat_w // 2, 88), category, font=font_cat, fill=0)
 
 
 def _render_panel_images(
@@ -569,8 +526,6 @@ def _render_panel_images(
     AQI gauge bar + timestamp across the bottom. The frame, title bar, and
     bottom strip are shared across themes; only the body changes.
     """
-    if theme not in SUPPORTED_THEMES:
-        theme = DEFAULT_THEME
     font_path = _THEME_FONT_PATHS.get(theme, FONT_PATH_BOLD)
 
     width, height = PANEL_WIDTH, PANEL_HEIGHT
@@ -583,14 +538,11 @@ def _render_panel_images(
     draw_black = ImageDraw.Draw(image_black)
     draw_red = ImageDraw.Draw(image_red)
 
-    # Thin double frame: keeps the existing border invariant (tests assert a
-    # black pixel at (3,3) and a red one at (5,5)) but at width=1 instead of 3
-    # so the inside has more room to breathe.
+    # Thin double frame: black outer, red inner.
     draw_black.rectangle((3, 3, width - 4, height - 4), outline=0, width=1)
     draw_red.rectangle((5, 5, width - 6, height - 6), outline=0, width=1)
 
-    # Title bar (red). Stale and alert states reuse the title slot so the
-    # red-region pixel-count differential the layout tests look for stays.
+    # Title bar (red). Stale and alert states replace the city label.
     if stale:
         title = "Air Quality [CACHED]"
     elif alert:
@@ -616,19 +568,18 @@ def _render_panel_images(
     # AQI gauge across the bottom, with the timestamp sharing the strip on
     # the right so the title bar stays uncluttered. Skip the red fill on a
     # stale render so an outlined-only bar visually echoes "this isn't fresh."
-    timestamp = datetime.now().strftime("%I:%M%p").lstrip("0").lower()
-    ts_w, _ = _measure(font_time, timestamp)
-    gauge_y0, gauge_y1 = 105, 113
-    gauge_x0 = 10
-    gauge_x1 = width - ts_w - 16
-    if stale:
-        draw_black.rectangle(
-            (gauge_x0, gauge_y0, gauge_x1, gauge_y1), outline=0, width=1,
-        )
+    # A stale render shows when the cached reading was taken, not the current
+    # time, so an old reading never carries a fresh-looking timestamp.
+    cached_time = data.get("Time")
+    if stale and not _is_missing(cached_time):
+        timestamp = str(cached_time).replace(" ", "").lower()
     else:
-        _draw_aqi_gauge(
-            draw_black, draw_red, gauge_x0, gauge_y0, gauge_x1, gauge_y1, aqi_value,
-        )
+        timestamp = datetime.now().strftime("%I:%M%p").lstrip("0").lower()
+    ts_w, _ = _measure(font_time, timestamp)
+    gauge_x1 = width - ts_w - 16
+    _draw_aqi_gauge(
+        draw_black, draw_red, 10, 105, gauge_x1, 113, None if stale else aqi_value,
+    )
     draw_red.text((gauge_x1 + 6, 102), timestamp, font=font_time, fill=0)
 
     return image_black, image_red
@@ -692,22 +643,10 @@ def render_preview_png(
     )
     width, height = PANEL_WIDTH, PANEL_HEIGHT
     preview = Image.new("RGB", (width, height), (250, 250, 250))
-    # PIL.Image.load() is typed Optional in the stubs but is only None on a
-    # closed/invalid image. Bail explicitly so this survives `python -O`
-    # (which strips `assert`) and gives a clear error if PIL ever changes.
-    px = preview.load()
-    rb = image_red.load()
-    bb = image_black.load()
-    if px is None or rb is None or bb is None:
-        raise RuntimeError("PIL.Image.load() returned None — image is invalid")
-    # Black wins overlaps, mirroring how the actual panel renders the two
-    # buffers — red pixels show through only where black is unset.
-    for j in range(height):
-        for i in range(width):
-            if bb[i, j] == 0:
-                px[i, j] = (20, 20, 20)
-            elif rb[i, j] == 0:
-                px[i, j] = (200, 30, 30)
+    # Ink is 0 in the 1-bit layers; invert to get paste masks. Black is pasted
+    # last so it wins overlaps, mirroring how the panel renders the buffers.
+    preview.paste((200, 30, 30), mask=ImageChops.invert(image_red.convert("L")))
+    preview.paste((20, 20, 20), mask=ImageChops.invert(image_black.convert("L")))
     if scale != 1:
         preview = preview.resize(
             (width * scale, height * scale), Image.Resampling.NEAREST,
@@ -777,6 +716,8 @@ def _parse_args(argv):
 
 def main(argv=None):
     args = _parse_args(argv)
+    # Loaded here rather than at import so a bad config exits with a readable
+    # SystemExit; it deliberately sits outside the cache-fallback try below.
     api_key, sensor_id, weather_coords, city, theme = load_config(CONF_PATH)
 
     source = "purpleair"
@@ -792,6 +733,8 @@ def main(argv=None):
                 f"PurpleAir last_seen={last_seen_epoch!r} is stale or "
                 f"untrustworthy (threshold={FRESHNESS_THRESHOLD_SEC}s)"
             )
+        # Fill dropped temp/humidity from Open-Meteo, never from the cache:
+        # stale weather is worse than "N/A".
         if _is_missing(data["Temp"]) or _is_missing(data["Humidity"]):
             if weather_coords is not None:
                 try:

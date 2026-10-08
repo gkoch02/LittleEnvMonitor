@@ -2,24 +2,19 @@
 
 These cover the branches the unit tests don't reach: live success, weather
 fallback wiring, cache-fallback rendering, the "bad config exits before the
-try" CLAUDE.md invariant, and the trend / "AQI Rising!" rules. The display
-function is replaced with a recorder fixture — the e-ink draw is exercised in
-its own dedicated tests (or on hardware), not here.
+try" invariant, the trend / "AQI Rising!" rules, and stale-sample handling.
+The display function is replaced with a recorder fixture — the e-ink draw is
+exercised in its own dedicated tests, not here.
 """
 import json
+import logging
 import time
+from datetime import datetime, timezone
 
 import pytest
+from conftest import network_down
 
 import airQuality
-
-
-@pytest.fixture
-def state_dir(tmp_path, monkeypatch):
-    state = tmp_path / "state"
-    monkeypatch.setattr(airQuality, "CACHE_PATH", str(state / "airquality" / "last_reading.json"))
-    monkeypatch.setattr(airQuality, "HEARTBEAT_PATH", str(state / "airquality" / "heartbeat"))
-    return state
 
 
 @pytest.fixture
@@ -74,8 +69,19 @@ def _purple_payload(pm25=20.0, pm10=22.0, temp=70, humidity=40, last_seen_epoch=
     }
 
 
+def _fetch_returns(monkeypatch, **payload_kwargs):
+    monkeypatch.setattr(
+        airQuality, "fetch_purpleair_data",
+        lambda *a, **kw: _purple_payload(**payload_kwargs),
+    )
+
+
+def _summary_lines(caplog):
+    return [m for m in caplog.messages if m.startswith("summary path=")]
+
+
 def test_live_success_writes_cache_and_heartbeat(state_dir, conf, display_recorder, monkeypatch):
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload())
+    _fetch_returns(monkeypatch)
 
     rc = airQuality.main([])
 
@@ -92,15 +98,11 @@ def test_live_success_writes_cache_and_heartbeat(state_dir, conf, display_record
     assert (state_dir / "airquality" / "heartbeat").is_file()
 
 
-def test_purpleair_fails_with_cache_renders_stale(state_dir, conf, display_recorder, monkeypatch):
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "last_reading.json").write_text(json.dumps(_purple_payload(pm25=15.0)))
-
-    def _boom(*a, **kw):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", _boom)
+def test_purpleair_fails_with_cache_renders_stale(
+    state_dir, seed_cache, conf, display_recorder, monkeypatch
+):
+    seed_cache(_purple_payload(pm25=15.0))
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", network_down)
 
     rc = airQuality.main([])
 
@@ -113,10 +115,7 @@ def test_purpleair_fails_with_cache_renders_stale(state_dir, conf, display_recor
 
 
 def test_purpleair_fails_no_cache_returns_one(state_dir, conf, display_recorder, monkeypatch):
-    def _boom(*a, **kw):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", _boom)
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", network_down)
 
     rc = airQuality.main([])
 
@@ -128,10 +127,7 @@ def test_purpleair_fails_no_cache_returns_one(state_dir, conf, display_recorder,
 def test_weather_fallback_fills_missing_temp_humidity(
     state_dir, conf, display_recorder, monkeypatch
 ):
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(temp="N/A", humidity="N/A"),
-    )
+    _fetch_returns(monkeypatch, temp="N/A", humidity="N/A")
     monkeypatch.setattr(
         airQuality, "fetch_local_weather",
         lambda lat, lon, **kw: {"Temp": 65, "Humidity": 55},
@@ -147,33 +143,28 @@ def test_weather_fallback_fills_missing_temp_humidity(
 def test_weather_fallback_failure_logs_but_does_not_raise(
     state_dir, conf, display_recorder, monkeypatch, caplog
 ):
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(temp="N/A", humidity="N/A"),
-    )
+    _fetch_returns(monkeypatch, temp="N/A", humidity="N/A")
 
     def _weather_boom(*a, **kw):
         raise RuntimeError("openmeteo down")
 
     monkeypatch.setattr(airQuality, "fetch_local_weather", _weather_boom)
 
-    rc = airQuality.main([])
+    with caplog.at_level(logging.ERROR, logger="airquality"):
+        rc = airQuality.main([])
 
     assert rc == 0
     assert display_recorder[0]["data"]["Temp"] == "N/A"
     assert display_recorder[0]["data"]["Humidity"] == "N/A"
+    assert "Local weather fallback failed" in caplog.messages
 
 
-def test_rising_banner_fires_at_or_above_threshold(state_dir, conf, display_recorder, monkeypatch):
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "last_reading.json").write_text(json.dumps(_purple_payload(pm25=10.0)))
-
+def test_rising_banner_fires_at_or_above_threshold(
+    state_dir, seed_cache, conf, display_recorder, monkeypatch
+):
+    seed_cache(_purple_payload(pm25=10.0))
     # Delta = 5.0 == TREND_THRESHOLD → banner fires.
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(pm25=15.0),
-    )
+    _fetch_returns(monkeypatch, pm25=15.0)
 
     airQuality.main([])
 
@@ -181,16 +172,12 @@ def test_rising_banner_fires_at_or_above_threshold(state_dir, conf, display_reco
     assert display_recorder[0]["trend_symbol"] == "+"
 
 
-def test_rising_banner_silent_below_threshold(state_dir, conf, display_recorder, monkeypatch):
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "last_reading.json").write_text(json.dumps(_purple_payload(pm25=10.0)))
-
+def test_rising_banner_silent_below_threshold(
+    state_dir, seed_cache, conf, display_recorder, monkeypatch
+):
+    seed_cache(_purple_payload(pm25=10.0))
     # Delta = 4.99 < threshold → trend marker still '+', but no banner.
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(pm25=14.99),
-    )
+    _fetch_returns(monkeypatch, pm25=14.99)
 
     airQuality.main([])
 
@@ -199,17 +186,12 @@ def test_rising_banner_silent_below_threshold(state_dir, conf, display_recorder,
 
 
 def test_trend_symbol_minus_when_pm25_holds_or_drops(
-    state_dir, conf, display_recorder, monkeypatch
+    state_dir, seed_cache, conf, display_recorder, monkeypatch
 ):
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "last_reading.json").write_text(json.dumps(_purple_payload(pm25=20.0)))
-
-    # Same value → '-' per CLAUDE.md trend rule.
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(pm25=20.0),
-    )
+    """Equal PM2.5 must yield '-'. This is the test that catches `>` being
+    loosened to `>=` in the trend rule."""
+    seed_cache(_purple_payload(pm25=20.0))
+    _fetch_returns(monkeypatch, pm25=20.0)
 
     airQuality.main([])
 
@@ -217,9 +199,21 @@ def test_trend_symbol_minus_when_pm25_holds_or_drops(
     assert display_recorder[0]["alert"] is False
 
 
+def test_trend_symbol_plus_on_tiny_increase(
+    state_dir, seed_cache, conf, display_recorder, monkeypatch
+):
+    """Any strict increase, however small, yields '+' — there's no dead band."""
+    seed_cache(_purple_payload(pm25=20.0))
+    _fetch_returns(monkeypatch, pm25=20.0001)
+
+    airQuality.main([])
+
+    assert display_recorder[0]["trend_symbol"] == "+"
+
+
 def test_bad_config_exits_before_try_block(tmp_path, display_recorder, monkeypatch):
-    # CLAUDE.md invariant: a bad config raises SystemExit *outside* the cache-fallback try.
-    # Verifies that load_config's SystemExit isn't caught by the broad except in main().
+    # A bad config raises SystemExit *outside* the cache-fallback try, so the
+    # broad except in main() doesn't swallow it.
     bad = tmp_path / "airquality.conf"
     bad.write_text("[purpleair]\napi_key = YOUR_PURPLEAIR_API_KEY\nsensor_id = 1\n")
     monkeypatch.setattr(airQuality, "CONF_PATH", str(bad))
@@ -232,9 +226,9 @@ def test_bad_config_exits_before_try_block(tmp_path, display_recorder, monkeypat
 def test_cache_write_failure_does_not_trigger_stale_render(
     state_dir, conf, display_recorder, monkeypatch
 ):
-    """Regression: a persistence error after a successful display must not flip
-    the run into the cache-fallback branch — the user already saw fresh data."""
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload())
+    """A persistence error after a successful display must not flip the run
+    into the cache-fallback branch — the user already saw fresh data."""
+    _fetch_returns(monkeypatch)
 
     def _boom(_data):
         raise OSError("disk full")
@@ -244,16 +238,14 @@ def test_cache_write_failure_does_not_trigger_stale_render(
     rc = airQuality.main([])
 
     assert rc == 0  # not 1 — fresh display still happened
-    assert len(display_recorder) == 1
+    assert len(display_recorder) == 1  # and no second [CACHED] render
     assert display_recorder[0]["stale"] is False
-    # And no second [CACHED] render was issued.
-    assert all(call["stale"] is False for call in display_recorder)
 
 
 def test_heartbeat_failure_does_not_trigger_stale_render(
     state_dir, conf, display_recorder, monkeypatch
 ):
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload())
+    _fetch_returns(monkeypatch)
 
     def _boom():
         raise OSError("read-only fs")
@@ -269,9 +261,7 @@ def test_heartbeat_failure_does_not_trigger_stale_render(
 
 def test_heartbeat_content_is_iso8601_utc(state_dir, conf, display_recorder, monkeypatch):
     """Operators alert on heartbeat staleness; the file must be parseable as UTC."""
-    from datetime import datetime, timezone
-
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload())
+    _fetch_returns(monkeypatch)
 
     rc = airQuality.main([])
 
@@ -279,26 +269,21 @@ def test_heartbeat_content_is_iso8601_utc(state_dir, conf, display_recorder, mon
     raw = (state_dir / "airquality" / "heartbeat").read_text()
     parsed = datetime.fromisoformat(raw)
     assert parsed.tzinfo is not None
-    # Within a few seconds of "now" — sanity check that we're not writing a
-    # frozen string.
-    delta = abs((datetime.now(timezone.utc) - parsed).total_seconds())
-    assert delta < 60
+    # Within a minute of "now" — not a frozen string.
+    assert abs((datetime.now(timezone.utc) - parsed).total_seconds()) < 60
 
 
 def test_missing_temp_humidity_with_no_weather_section_logs_and_continues(
     tmp_path, state_dir, display_recorder, monkeypatch, caplog
 ):
-    """Branch: PurpleAir drops Temp/Humidity but conf has no [weather] section.
+    """PurpleAir drops Temp/Humidity but conf has no [weather] section.
     We log and render N/A — we do NOT pull stale temp/humidity from cache."""
     conf_path = tmp_path / "airquality.conf"
     conf_path.write_text("[purpleair]\napi_key = real-key\nsensor_id = 12345\n")
     monkeypatch.setattr(airQuality, "CONF_PATH", str(conf_path))
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(temp="N/A", humidity="N/A"),
-    )
+    _fetch_returns(monkeypatch, temp="N/A", humidity="N/A")
 
-    with caplog.at_level("INFO"):
+    with caplog.at_level(logging.INFO):
         rc = airQuality.main([])
 
     assert rc == 0
@@ -308,19 +293,11 @@ def test_missing_temp_humidity_with_no_weather_section_logs_and_continues(
 
 
 def test_live_path_with_unparseable_cached_pm25_treats_trend_as_first_run(
-    state_dir, conf, display_recorder, monkeypatch
+    state_dir, seed_cache, conf, display_recorder, monkeypatch
 ):
-    """Branch: cache exists but PM2.5 is junk. last_pm25 falls through to None
-    and the trend marker behaves like a fresh start ('-', no banner)."""
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "last_reading.json").write_text(
-        json.dumps({"PM2.5": "junk", "PM10": 0, "Temp": 0, "Humidity": 0, "Time": "x"})
-    )
-
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload(pm25=20.0),
-    )
+    """Cache exists but PM2.5 is junk: the trend behaves like a fresh start."""
+    seed_cache({"PM2.5": "junk", "PM10": 0, "Temp": 0, "Humidity": 0, "Time": "x"})
+    _fetch_returns(monkeypatch, pm25=20.0)
 
     rc = airQuality.main([])
 
@@ -330,20 +307,12 @@ def test_live_path_with_unparseable_cached_pm25_treats_trend_as_first_run(
 
 
 def test_cache_fallback_with_unparseable_pm25_returns_one_without_drawing(
-    state_dir, conf, display_recorder, monkeypatch
+    state_dir, seed_cache, conf, display_recorder, monkeypatch
 ):
-    """Branch: live fetch fails; cache is present but PM2.5 isn't a number.
-    We can't render a useful [CACHED] panel, so exit 1 and don't draw garbage."""
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "last_reading.json").write_text(
-        json.dumps({"PM2.5": "junk", "PM10": 0, "Temp": 0, "Humidity": 0, "Time": "x"})
-    )
-
-    def _boom(*a, **kw):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", _boom)
+    """Live fetch fails and the cached PM2.5 isn't a number: exit 1 without
+    drawing garbage."""
+    seed_cache({"PM2.5": "junk", "PM10": 0, "Temp": 0, "Humidity": 0, "Time": "x"})
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", network_down)
 
     rc = airQuality.main([])
 
@@ -355,11 +324,8 @@ def test_cache_fallback_with_unparseable_pm25_returns_one_without_drawing(
 def test_weather_fallback_fills_only_missing_temp(
     state_dir, conf, display_recorder, monkeypatch
 ):
-    """Partial fallback: only Temp is N/A — Humidity from PurpleAir must be preserved."""
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(temp="N/A", humidity=40),
-    )
+    """Only Temp is N/A — Humidity from PurpleAir must be preserved."""
+    _fetch_returns(monkeypatch, temp="N/A", humidity=40)
     monkeypatch.setattr(
         airQuality, "fetch_local_weather",
         lambda lat, lon, **kw: {"Temp": 65, "Humidity": 99},
@@ -375,11 +341,8 @@ def test_weather_fallback_fills_only_missing_temp(
 def test_weather_fallback_fills_only_missing_humidity(
     state_dir, conf, display_recorder, monkeypatch
 ):
-    """Partial fallback: only Humidity is N/A — Temp from PurpleAir must be preserved."""
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(temp=70, humidity="N/A"),
-    )
+    """Only Humidity is N/A — Temp from PurpleAir must be preserved."""
+    _fetch_returns(monkeypatch, temp=70, humidity="N/A")
     monkeypatch.setattr(
         airQuality, "fetch_local_weather",
         lambda lat, lon, **kw: {"Temp": 99, "Humidity": 55},
@@ -393,20 +356,11 @@ def test_weather_fallback_fills_only_missing_humidity(
 
 
 def test_numeric_string_pm25_in_cache_computes_trend(
-    state_dir, conf, display_recorder, monkeypatch
+    state_dir, seed_cache, conf, display_recorder, monkeypatch
 ):
-    """Cache written by an older version may store PM2.5 as a numeric string.
-    float() coercion at lines 749-752 must parse it and produce a valid trend."""
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    import json
-    (cache_dir / "last_reading.json").write_text(
-        json.dumps({"PM2.5": "10.0", "PM10": 0, "Temp": 0, "Humidity": 0, "Time": "x"})
-    )
-
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload(pm25=20.0),
-    )
+    """A cache that stores PM2.5 as a numeric string must still drive the trend."""
+    seed_cache({"PM2.5": "10.0", "PM10": 0, "Temp": 0, "Humidity": 0, "Time": "x"})
+    _fetch_returns(monkeypatch, pm25=20.0)
 
     rc = airQuality.main([])
 
@@ -416,70 +370,56 @@ def test_numeric_string_pm25_in_cache_computes_trend(
     assert display_recorder[0]["trend_symbol"] == "+"
 
 
-def test_summary_logs_live_branch_on_success(
-    state_dir, conf, display_recorder, monkeypatch, caplog
-):
-    """_summary() must emit a structured log line on every exit path so
-    operators can grep journalctl for the run outcome."""
-    import logging
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload())
-
-    with caplog.at_level(logging.INFO, logger="airquality"):
-        airQuality.main([])
-
-    summary_msgs = [m for m in caplog.messages if m.startswith("summary path=")]
-    assert len(summary_msgs) == 1
-    assert "path=live" in summary_msgs[0]
-    assert "pm25=" in summary_msgs[0]
-    assert "rising=" in summary_msgs[0]
-
-
 def test_cache_fallback_swallows_display_exception(
-    state_dir, conf, display_recorder, monkeypatch, caplog
+    state_dir, seed_cache, conf, display_recorder, monkeypatch, caplog
 ):
-    """Branch: cached data is valid but the panel itself errors during the
-    [CACHED] render. We log the exception, don't crash the process, and still
-    return 1 (the live fetch failed — that's the signal monitoring cares about)."""
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "last_reading.json").write_text(json.dumps(_purple_payload(pm25=15.0)))
-
-    def _fetch_boom(*a, **kw):
-        raise RuntimeError("network down")
+    """Cached data is valid but the panel errors during the [CACHED] render.
+    We log, don't crash, and still return 1."""
+    seed_cache(_purple_payload(pm25=15.0))
 
     def _display_boom(*a, **kw):
         raise RuntimeError("panel exploded")
 
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", _fetch_boom)
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", network_down)
     monkeypatch.setattr(airQuality, "display_air_quality", _display_boom)
 
-    with caplog.at_level("ERROR"):
+    with caplog.at_level(logging.ERROR):
         rc = airQuality.main([])
 
     assert rc == 1
     assert any("Failed to display cached data" in m for m in caplog.messages)
 
 
-def test_summary_logs_cache_fallback_branch(
+# --- `summary path=...` log line --------------------------------------------
+# Operators grep journalctl for this line; each exit path gets its own tag.
+
+
+def test_summary_logs_live_branch_on_success(
     state_dir, conf, display_recorder, monkeypatch, caplog
 ):
-    """Operators grep `summary path=cache_fallback` to detect units silently
-    stuck on a stale render. Pin the format end-to-end."""
-    import logging
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "last_reading.json").write_text(json.dumps(_purple_payload(pm25=15.0)))
+    _fetch_returns(monkeypatch)
 
-    def _boom(*a, **kw):
-        raise RuntimeError("network down")
+    with caplog.at_level(logging.INFO, logger="airquality"):
+        airQuality.main([])
 
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", _boom)
+    summary_msgs = _summary_lines(caplog)
+    assert len(summary_msgs) == 1
+    assert "path=live" in summary_msgs[0]
+    assert "pm25=" in summary_msgs[0]
+    assert "rising=" in summary_msgs[0]
+
+
+def test_summary_logs_cache_fallback_branch(
+    state_dir, seed_cache, conf, display_recorder, monkeypatch, caplog
+):
+    seed_cache(_purple_payload(pm25=15.0))
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", network_down)
 
     with caplog.at_level(logging.INFO, logger="airquality"):
         rc = airQuality.main([])
 
     assert rc == 1
-    summary_msgs = [m for m in caplog.messages if m.startswith("summary path=")]
+    summary_msgs = _summary_lines(caplog)
     assert len(summary_msgs) == 1
     assert "path=cache_fallback" in summary_msgs[0]
     assert "pm25=15.0" in summary_msgs[0]
@@ -488,21 +428,15 @@ def test_summary_logs_cache_fallback_branch(
 def test_summary_logs_fail_branch_when_no_cache(
     state_dir, conf, display_recorder, monkeypatch, caplog
 ):
-    """Live fetch fails, no cache on disk → `path=fail`. Distinct from
-    `cache_fallback` because monitoring should alert harder here (no stale
-    display at all, not even a [CACHED] panel)."""
-    import logging
-
-    def _boom(*a, **kw):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", _boom)
+    """No cache on disk → `path=fail`, distinct from `cache_fallback` because
+    monitoring should alert harder here (nothing on the panel at all)."""
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", network_down)
 
     with caplog.at_level(logging.INFO, logger="airquality"):
         rc = airQuality.main([])
 
     assert rc == 1
-    summary_msgs = [m for m in caplog.messages if m.startswith("summary path=")]
+    summary_msgs = _summary_lines(caplog)
     assert len(summary_msgs) == 1
     assert "path=fail" in summary_msgs[0]
 
@@ -510,84 +444,45 @@ def test_summary_logs_fail_branch_when_no_cache(
 def test_summary_logs_dry_run_branch_on_success(
     tmp_path, state_dir, conf, monkeypatch, caplog
 ):
-    """Dry-run is a distinct exit path — it shouldn't reuse `path=live`,
-    otherwise journalctl alerts can't tell a real run from a preview."""
-    import logging
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", lambda *a, **kw: _purple_payload())
-    out = tmp_path / "preview.png"
+    _fetch_returns(monkeypatch)
 
     with caplog.at_level(logging.INFO, logger="airquality"):
-        rc = airQuality.main(["--dry-run", str(out)])
+        rc = airQuality.main(["--dry-run", str(tmp_path / "preview.png")])
 
     assert rc == 0
-    summary_msgs = [m for m in caplog.messages if m.startswith("summary path=")]
+    summary_msgs = _summary_lines(caplog)
     assert len(summary_msgs) == 1
-    assert "path=dry_run" in summary_msgs[0]
-    # `dry_run_failed` is the failure variant; the success log should NOT match it.
-    assert "path=dry_run_failed" not in summary_msgs[0]
+    assert "path=dry_run " in summary_msgs[0]
 
 
 def test_summary_logs_dry_run_failed_branch_on_fetch_error(
     tmp_path, state_dir, conf, monkeypatch, caplog
 ):
-    """Dry-run failure path emits its own summary tag — monitoring shouldn't
-    confuse a failed preview with a live-fetch outage."""
-    import logging
-
-    def _boom(*a, **kw):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", _boom)
-    out = tmp_path / "preview.png"
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", network_down)
 
     with caplog.at_level(logging.INFO, logger="airquality"):
-        rc = airQuality.main(["--dry-run", str(out)])
+        rc = airQuality.main(["--dry-run", str(tmp_path / "preview.png")])
 
     assert rc == 1
-    summary_msgs = [m for m in caplog.messages if m.startswith("summary path=")]
+    summary_msgs = _summary_lines(caplog)
     assert len(summary_msgs) == 1
     assert "path=dry_run_failed" in summary_msgs[0]
 
 
-def test_trend_symbol_plus_only_on_strictly_greater_pm25(
-    state_dir, conf, display_recorder, monkeypatch
-):
-    """The CLAUDE.md rule is *strictly greater than*, not >=. Pin it: a tiny
-    increment must yield '+', but exact equality must yield '-'. A regression
-    flipping `>` to `>=` would only show up here, since the other trend tests
-    use deltas that both rules agree on."""
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "last_reading.json").write_text(json.dumps(_purple_payload(pm25=20.0)))
-
-    # Tiny increment above the cached value — strictly greater, so '+'.
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(pm25=20.0001),
-    )
-    airQuality.main([])
-    assert display_recorder[-1]["trend_symbol"] == "+"
-
-
-# --- Stale PurpleAir sample handling (issue #17) ---------------------------
+# --- Stale PurpleAir sample handling ----------------------------------------
+# The freshness policy itself is unit-tested via `_is_fresh` in
+# test_fetch_purpleair.py; these cover main()'s wiring of it.
 
 
 def test_stale_purpleair_sample_falls_back_to_cache(
-    state_dir, conf, display_recorder, monkeypatch
+    state_dir, seed_cache, conf, display_recorder, monkeypatch
 ):
     """A `last_seen` older than FRESHNESS_THRESHOLD_SEC must not be treated as
     a live update: no heartbeat, no advancing the cache to the stale payload,
     and the previous cached reading gets rendered as [CACHED]."""
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    cache_dir_json = cache_dir / "last_reading.json"
-    cache_dir_json.write_text(json.dumps(_purple_payload(pm25=11.0)))
-
+    cache_path = seed_cache(_purple_payload(pm25=11.0))
     stale_epoch = time.time() - airQuality.FRESHNESS_THRESHOLD_SEC - 1
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(pm25=99.0, last_seen_epoch=stale_epoch),
-    )
+    _fetch_returns(monkeypatch, pm25=99.0, last_seen_epoch=stale_epoch)
 
     rc = airQuality.main([])
 
@@ -598,19 +493,15 @@ def test_stale_purpleair_sample_falls_back_to_cache(
     # PM2.5=99.0 payload that just came back.
     assert display_recorder[0]["data"]["PM2.5"] == 11.0
     assert not (state_dir / "airquality" / "heartbeat").exists()
-    # Cache on disk must still hold the old reading — a stale sample must
-    # never overwrite it.
-    assert json.loads(cache_dir_json.read_text())["PM2.5"] == 11.0
+    # A stale sample must never overwrite the cache.
+    assert json.loads(cache_path.read_text())["PM2.5"] == 11.0
 
 
 def test_stale_purpleair_sample_no_cache_returns_one_without_drawing(
     state_dir, conf, display_recorder, monkeypatch
 ):
     stale_epoch = time.time() - airQuality.FRESHNESS_THRESHOLD_SEC - 1
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(last_seen_epoch=stale_epoch),
-    )
+    _fetch_returns(monkeypatch, last_seen_epoch=stale_epoch)
 
     rc = airQuality.main([])
 
@@ -623,16 +514,10 @@ def test_fresh_purpleair_sample_at_threshold_boundary_is_accepted(
     state_dir, conf, display_recorder, monkeypatch
 ):
     """Exactly at FRESHNESS_THRESHOLD_SEC is still fresh (<=, not <)."""
-    # Pin time.time() so the boundary is exact — main() and this test would
-    # otherwise call the real clock microseconds apart, occasionally tipping
-    # the sample just past the threshold and flaking the assertion.
+    # Pin time.time() so main() and this test agree on "now" to the microsecond.
     fixed_now = 1_700_010_000.0
     monkeypatch.setattr(airQuality.time, "time", lambda: fixed_now)
-    boundary_epoch = fixed_now - airQuality.FRESHNESS_THRESHOLD_SEC
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(last_seen_epoch=boundary_epoch),
-    )
+    _fetch_returns(monkeypatch, last_seen_epoch=fixed_now - airQuality.FRESHNESS_THRESHOLD_SEC)
 
     rc = airQuality.main([])
 
@@ -641,96 +526,20 @@ def test_fresh_purpleair_sample_at_threshold_boundary_is_accepted(
     assert (state_dir / "airquality" / "heartbeat").is_file()
 
 
-def test_missing_last_seen_epoch_treated_as_stale(
-    state_dir, conf, display_recorder, monkeypatch
-):
-    """A payload with no LastSeenEpoch at all (e.g. PurpleAir dropped the
-    field) is untrustworthy, not "extra fresh" — same handling as stale."""
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(last_seen_epoch=None),
-    )
-
-    rc = airQuality.main([])
-
-    assert rc == 1
-    assert display_recorder == []
-    assert not (state_dir / "airquality" / "heartbeat").exists()
-
-
-def test_malformed_last_seen_epoch_treated_as_stale(
-    state_dir, conf, display_recorder, monkeypatch
-):
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(last_seen_epoch="not-a-number"),
-    )
-
-    rc = airQuality.main([])
-
-    assert rc == 1
-    assert display_recorder == []
-    assert not (state_dir / "airquality" / "heartbeat").exists()
-
-
-def test_future_skewed_last_seen_treated_as_stale(
-    state_dir, conf, display_recorder, monkeypatch
-):
-    """A last_seen far in the future (clock skew / bad data) can't be a real
-    sample — treat it as untrustworthy rather than "extra fresh"."""
-    future_epoch = time.time() + airQuality.FUTURE_SKEW_TOLERANCE_SEC + 3600
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(last_seen_epoch=future_epoch),
-    )
-
-    rc = airQuality.main([])
-
-    assert rc == 1
-    assert display_recorder == []
-    assert not (state_dir / "airquality" / "heartbeat").exists()
-
-
-def test_slightly_future_last_seen_within_skew_tolerance_is_fresh(
-    state_dir, conf, display_recorder, monkeypatch
-):
-    """Small clock skew (well within tolerance) shouldn't reject a genuinely
-    fresh sample."""
-    slightly_future_epoch = time.time() + 30  # 30s ahead, well under tolerance
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(last_seen_epoch=slightly_future_epoch),
-    )
-
-    rc = airQuality.main([])
-
-    assert rc == 0
-    assert display_recorder[0]["stale"] is False
-
-
 def test_stale_sample_summary_logs_cache_fallback_branch(
-    state_dir, conf, display_recorder, monkeypatch, caplog
+    state_dir, seed_cache, conf, display_recorder, monkeypatch, caplog
 ):
-    """The summary log path for a stale-sample skip must match the ordinary
-    fetch-failure cache-fallback branch, so monitoring doesn't need a third
-    code path to watch."""
-    import logging
-
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "last_reading.json").write_text(json.dumps(_purple_payload(pm25=15.0)))
-
+    """A stale-sample skip logs the same summary path as an ordinary fetch
+    failure, so monitoring doesn't need a third code path to watch."""
+    seed_cache(_purple_payload(pm25=15.0))
     stale_epoch = time.time() - airQuality.FRESHNESS_THRESHOLD_SEC - 1
-    monkeypatch.setattr(
-        airQuality, "fetch_purpleair_data",
-        lambda *a, **kw: _purple_payload(pm25=50.0, last_seen_epoch=stale_epoch),
-    )
+    _fetch_returns(monkeypatch, pm25=50.0, last_seen_epoch=stale_epoch)
 
     with caplog.at_level(logging.INFO, logger="airquality"):
         rc = airQuality.main([])
 
     assert rc == 1
-    summary_msgs = [m for m in caplog.messages if m.startswith("summary path=")]
+    summary_msgs = _summary_lines(caplog)
     assert len(summary_msgs) == 1
     assert "path=cache_fallback" in summary_msgs[0]
     assert "pm25=15.0" in summary_msgs[0]

@@ -35,7 +35,7 @@ The layout is selectable via `[display] theme` in `airquality.conf`. Three varia
 - **Right column — hero AQI.** Large numeric AQI under a small `AQI` caption with the category label beneath (e.g. `Good`, `Moderate`, `USG`, `Unhealthy`). The numeric AQI uses EPA's piecewise-linear PM2.5 → AQI conversion; `--` is shown if the reading is unusable.
 - **Hero number renders red** when the category is "Unhealthy for Sensitive Groups" or worse (PM2.5 > 35.4 µg/m³); otherwise black.
 - **AQI gauge bar (bottom).** Outlined rectangle with a red fill proportional to `min(AQI, 300) / 300`, so a saturated bar means "at least very unhealthy." On a `[CACHED]` render the bar is outlined-only — no red fill — to visually echo "this isn't fresh."
-- **Timestamp (red, bottom-right)** — the time of the last update, sharing the bottom strip with the gauge.
+- **Timestamp (red, bottom-right)** — when the panel was rendered; on a `[CACHED]` render, when the cached reading was taken, so an old reading never looks fresh. Shares the bottom strip with the gauge.
 
 ## Rebuilding from scratch
 
@@ -143,7 +143,7 @@ CI runs the same suite on every push and pull request across Python 3.10, 3.11, 
 | `requirements.txt` | Runtime Python dependencies (includes Pi-only hardware libs) |
 | `requirements-dev.txt` | Test dependencies (works on any machine) |
 | `tests/` | Pytest suite for the platform-independent code paths |
-| `.github/workflows/ci.yml` | CI workflow that runs `pytest` on push and pull request |
+| `.github/workflows/ci.yml` | CI workflow: `ruff`, `mypy`, `pytest`, `shellcheck`, and `systemd-analyze verify` on push and pull request |
 | `systemd/airquality.service.in` | systemd oneshot service unit template — rendered by `deploy.sh` |
 | `systemd/airquality.timer` | systemd timer (every 30 min, 8 AM–9:30 PM) |
 | `waveshare_epd/` | Waveshare e-Paper Python library (MIT, from [Waveshare's e-Paper repo](https://github.com/waveshare/e-Paper)). See `waveshare_epd/UPSTREAM.md` for vendored versions. |
