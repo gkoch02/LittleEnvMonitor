@@ -45,12 +45,9 @@ def test_generate_preview_writes_one_png_per_theme(tmp_path, monkeypatch):
     docs_target = tmp_path / "docs"
     docs_target.mkdir()
 
-    # The script writes to `<repo>/docs/preview*.png` — symlink the tmp dir
-    # into a fake repo layout and point the script at it via PYTHONPATH so
-    # `from airQuality import ...` still resolves.
+    # The script writes to `<repo>/docs/preview*.png`; run it via a wrapper
+    # that redirects DOCS_DIR/DEFAULT_OUT to the tmp dir before render() runs.
     script = os.path.join(REPO_ROOT, "docs", "generate_preview.py")
-
-    # Run the script with a wrapper that swaps DOCS_DIR before render() runs.
     runner = tmp_path / "run.py"
     runner.write_text(
         "import sys, os\n"

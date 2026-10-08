@@ -59,31 +59,10 @@ fi
 # secret behind, even if validation fails.
 chmod 600 "$CONF_PATH"
 
-# Validate config has real values before installing the timer. Mirrors the
-# runtime load_config() rules: PURPLEAIR_API_KEY env var wins over the file,
-# and sensor_id must be a positive integer.
-if ! "$VENV_PYTHON" - "$CONF_PATH" <<'PY'
-import configparser, os, sys
-parser = configparser.ConfigParser()
-parser.read(sys.argv[1])
-try:
-    file_key = parser["purpleair"]["api_key"].strip()
-    sensor_id = parser["purpleair"]["sensor_id"].strip()
-except KeyError as e:
-    sys.exit(f"missing key: {e}")
-env_key = (os.environ.get("PURPLEAIR_API_KEY") or "").strip()
-api_key = env_key or file_key
-if not api_key or api_key == "YOUR_PURPLEAIR_API_KEY":
-    sys.exit("api_key is not set (in airquality.conf or PURPLEAIR_API_KEY)")
-if not sensor_id or sensor_id == "YOUR_SENSOR_ID":
-    sys.exit("sensor_id is not set")
-try:
-    sid = int(sensor_id)
-except ValueError:
-    sys.exit("sensor_id must be an integer")
-if sid <= 0:
-    sys.exit("sensor_id must be a positive integer")
-PY
+# Validate the config with the same load_config() the service runs, so the
+# preflight can't drift from the runtime rules.
+if ! PYTHONPATH="$REPO_DIR" "$VENV_PYTHON" -c \
+        'import sys, airQuality; airQuality.load_config(sys.argv[1])' "$CONF_PATH"
 then
     echo "    airquality.conf is invalid — fix it and re-run deploy.sh." >&2
     exit 1

@@ -12,14 +12,11 @@ def _no_sleep(monkeypatch):
     monkeypatch.setattr(airQuality.time, "sleep", lambda *_: None)
 
 
-@pytest.fixture
-def mock_get(monkeypatch):
-    """Replace the cached requests.Session with a stub whose .get is a MagicMock."""
-    fake = MagicMock()
-    fake_session = MagicMock()
-    fake_session.get = fake
-    monkeypatch.setattr(airQuality, "_http_session", lambda: fake_session)
-    return fake
+def _sensor(pm25=1, pm10=1, temp=1, humidity=1, last_seen=1_700_000_000):
+    return {"sensor": {
+        "pm2.5": pm25, "pm10.0": pm10, "temperature": temp, "humidity": humidity,
+        "last_seen": last_seen,
+    }}
 
 
 def _mock_response(status_code, json_data=None, headers=None):
@@ -32,15 +29,7 @@ def _mock_response(status_code, json_data=None, headers=None):
 
 
 def test_successful_fetch_parses_fields(mock_get):
-    payload = {
-        "sensor": {
-            "pm2.5": 7.5,
-            "pm10.0": 12.3,
-            "temperature": 68,
-            "humidity": 45,
-            "last_seen": 1_700_000_000,
-        }
-    }
+    payload = _sensor(pm25=7.5, pm10=12.3, temp=68, humidity=45)
     mock_get.return_value = _mock_response(200, payload)
     result = airQuality.fetch_purpleair_data(123, "key", retries=1)
 
@@ -82,15 +71,7 @@ def test_network_error_retries_then_raises(mock_get):
 
 
 def test_recovers_after_transient_failure(mock_get):
-    payload = {
-        "sensor": {
-            "pm2.5": 5,
-            "pm10.0": 8,
-            "temperature": 70,
-            "humidity": 40,
-            "last_seen": 1_700_000_000,
-        }
-    }
+    payload = _sensor(pm25=5, pm10=8, temp=70, humidity=40)
     mock_get.side_effect = [_mock_response(503), _mock_response(200, payload)]
     result = airQuality.fetch_purpleair_data(123, "key", retries=3)
     assert result["PM2.5"] == 5
@@ -109,15 +90,7 @@ def test_missing_sensor_fields_default_to_na(mock_get):
 
 
 def test_429_retries_with_retry_after_header(mock_get):
-    payload = {
-        "sensor": {
-            "pm2.5": 9,
-            "pm10.0": 11,
-            "temperature": 65,
-            "humidity": 50,
-            "last_seen": 1_700_000_000,
-        }
-    }
+    payload = _sensor(pm25=9, pm10=11, temp=65, humidity=50)
     mock_get.side_effect = [
         _mock_response(429, headers={"Retry-After": "1"}),
         _mock_response(200, payload),
@@ -135,7 +108,8 @@ def test_429_exhausts_retries_then_raises(mock_get):
 
 
 def test_retries_below_one_rejected(mock_get):
-    """Guard against the assert-elided-under-O case from the review."""
+    """The post-loop `assert` relies on at least one attempt; enforce it
+    explicitly so `python -O` can't elide the check."""
     with pytest.raises(ValueError, match="retries"):
         airQuality.fetch_purpleair_data(123, "key", retries=0)
     assert mock_get.call_count == 0
@@ -145,12 +119,7 @@ def test_retry_after_is_capped(monkeypatch, mock_get):
     """A 5-minute Retry-After hint must not exceed the cap."""
     captured_sleeps = []
     monkeypatch.setattr(airQuality.time, "sleep", lambda s: captured_sleeps.append(s))
-    payload = {
-        "sensor": {
-            "pm2.5": 1, "pm10.0": 1, "temperature": 1, "humidity": 1,
-            "last_seen": 1_700_000_000,
-        }
-    }
+    payload = _sensor()
     mock_get.side_effect = [
         _mock_response(429, headers={"Retry-After": "300"}),
         _mock_response(200, payload),
@@ -162,12 +131,7 @@ def test_retry_after_is_capped(monkeypatch, mock_get):
 def test_retry_after_zero_falls_through_to_backoff(monkeypatch, mock_get):
     captured_sleeps = []
     monkeypatch.setattr(airQuality.time, "sleep", lambda s: captured_sleeps.append(s))
-    payload = {
-        "sensor": {
-            "pm2.5": 1, "pm10.0": 1, "temperature": 1, "humidity": 1,
-            "last_seen": 1_700_000_000,
-        }
-    }
+    payload = _sensor()
     mock_get.side_effect = [
         _mock_response(429, headers={"Retry-After": "0"}),
         _mock_response(200, payload),
@@ -182,12 +146,7 @@ def test_retry_after_http_date_falls_through_to_backoff(monkeypatch, mock_get):
     must fall through to the exponential backoff instead of raising."""
     captured_sleeps = []
     monkeypatch.setattr(airQuality.time, "sleep", lambda s: captured_sleeps.append(s))
-    payload = {
-        "sensor": {
-            "pm2.5": 1, "pm10.0": 1, "temperature": 1, "humidity": 1,
-            "last_seen": 1_700_000_000,
-        }
-    }
+    payload = _sensor()
     mock_get.side_effect = [
         _mock_response(
             429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"},
@@ -201,28 +160,21 @@ def test_retry_after_http_date_falls_through_to_backoff(monkeypatch, mock_get):
 
 def test_last_seen_zero_renders_as_na(mock_get):
     """A `last_seen` of 0 means "no reading yet" — don't show 1969."""
-    mock_get.return_value = _mock_response(
-        200,
-        {
-            "sensor": {
-                "pm2.5": 5, "pm10.0": 6, "temperature": 70, "humidity": 40,
-                "last_seen": 0,
-            }
-        },
-    )
+    mock_get.return_value = _mock_response(200, _sensor(last_seen=0))
     result = airQuality.fetch_purpleair_data(123, "key", retries=1)
     assert result["Time"] == "N/A"
     assert result["LastSeenEpoch"] is None
 
 
-def test_missing_sensor_key_raises_runtime_error(mock_get):
-    """A 200 response with no `sensor` key shouldn't escape as a bare KeyError."""
+def test_missing_sensor_key_raises(mock_get):
+    """A 200 response with no `sensor` key raises (and isn't retried), so
+    main() takes the cache-fallback path instead of rendering garbage."""
     mock_get.return_value = _mock_response(200, {"unexpected": "shape"})
-    with pytest.raises((RuntimeError, KeyError)):
+    with pytest.raises(KeyError):
         airQuality.fetch_purpleair_data(123, "key", retries=1)
 
 
-# --- Freshness validation (issue #17) ---------------------------------------
+# --- Freshness validation ----------------------------------------------------
 #
 # fetch_purpleair_data() only carries the raw epoch through; the actual
 # freshness policy (threshold, missing/malformed/future-skew handling) lives

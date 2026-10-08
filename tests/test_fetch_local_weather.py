@@ -6,16 +6,6 @@ import requests
 import airQuality
 
 
-@pytest.fixture
-def mock_get(monkeypatch):
-    """Replace the cached requests.Session with a stub whose .get is a MagicMock."""
-    fake = MagicMock()
-    fake_session = MagicMock()
-    fake_session.get = fake
-    monkeypatch.setattr(airQuality, "_http_session", lambda: fake_session)
-    return fake
-
-
 def _mock_response(status_code, json_data=None):
     resp = MagicMock()
     resp.status_code = status_code

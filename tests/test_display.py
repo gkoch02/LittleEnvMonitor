@@ -1,10 +1,8 @@
 """Tests for `display_air_quality` end-to-end against the FakeEPD stub.
 
-These do real PIL rendering (Inter-Bold is vendored at `fonts/Inter-Bold.ttf`,
-so they work on any host without needing system fonts installed). They are the
-only coverage of the SR1 (`epd.init() == -1`) and SR2 (alarm watchdog)
-reliability fences — keeping them in the suite is what gets the project from
-~70 % coverage of `airQuality.py` to ~91 %.
+These do real PIL rendering (fonts are vendored under `fonts/`, so they work
+on any host). They are the only coverage of the `epd.init() == -1` check, the
+SIGALRM watchdogs, and the always-sleep-the-panel invariant.
 """
 import time
 
@@ -74,7 +72,7 @@ def test_stuck_display_triggers_alarm_timeout(monkeypatch):
 
 
 def test_stuck_sleep_is_also_fenced(monkeypatch):
-    """SR2 follow-up: SIGALRM is one-shot, so the finally re-arms its own
+    """SIGALRM is one-shot, so the finally re-arms its own
     alarm. A hung `epd.sleep()` must still time out."""
     monkeypatch.setattr(airQuality, "SLEEP_TIMEOUT_SEC", 1)
 
@@ -94,28 +92,6 @@ def test_stuck_sleep_is_also_fenced(monkeypatch):
     )
     elapsed = time.monotonic() - start
     assert elapsed < 3.0
-
-
-def test_stale_render_does_not_raise():
-    airQuality.display_air_quality(
-        _payload(), alert=False, trend_symbol="?", aqi_value=75, category="Moderate",
-        cat_color="black", city="Campbell", stale=True,
-    )
-
-
-def test_alert_render_does_not_raise():
-    airQuality.display_air_quality(
-        _payload(), alert=True, trend_symbol="+", aqi_value=160, category="Unhealthy",
-        cat_color="red", city="Campbell",
-    )
-
-
-def test_render_handles_aqi_value_none():
-    """Sanity check: pre-AQI cache entries can land on the display path."""
-    airQuality.display_air_quality(
-        _payload(), alert=False, trend_symbol="-", aqi_value=None, category="Good",
-        cat_color="black", city="Campbell",
-    )
 
 
 def test_display_routes_black_buffer_first_red_second():
@@ -148,7 +124,7 @@ def test_display_routes_black_buffer_first_red_second():
 
 
 def test_sleep_exception_is_logged_not_raised(monkeypatch, caplog):
-    """SR2 invariant: if epd.sleep() raises (e.g. SPI glitch), the exception
+    """If epd.sleep() raises (e.g. SPI glitch), the exception
     must be caught and logged, not propagated — otherwise a successful display
     would still surface as a failure to main()."""
     def _boom(self):

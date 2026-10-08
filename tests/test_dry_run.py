@@ -5,20 +5,12 @@ pipeline but writes a PNG instead of touching e-ink hardware, and skips cache
 and heartbeat writes (the operator asked for a one-off preview, not a state
 update).
 """
-import json
 import time
 
 import pytest
+from conftest import network_down
 
 import airQuality
-
-
-@pytest.fixture
-def state_dir(tmp_path, monkeypatch):
-    state = tmp_path / "state"
-    monkeypatch.setattr(airQuality, "CACHE_PATH", str(state / "airquality" / "last_reading.json"))
-    monkeypatch.setattr(airQuality, "HEARTBEAT_PATH", str(state / "airquality" / "heartbeat"))
-    return state
 
 
 @pytest.fixture
@@ -52,17 +44,11 @@ def test_dry_run_writes_png_and_skips_state(tmp_path, state_dir, conf, monkeypat
 
 
 def test_dry_run_does_not_fall_back_to_cache_on_fetch_failure(
-    tmp_path, state_dir, conf, monkeypatch,
+    tmp_path, seed_cache, conf, monkeypatch,
 ):
     """A real run would render [CACHED] here; dry-run should fail loudly."""
-    cache_dir = state_dir / "airquality"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "last_reading.json").write_text(json.dumps(_payload(pm25=15.0)))
-
-    def _boom(*a, **kw):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr(airQuality, "fetch_purpleair_data", _boom)
+    seed_cache(_payload(pm25=15.0))
+    monkeypatch.setattr(airQuality, "fetch_purpleair_data", network_down)
     out = tmp_path / "preview.png"
 
     rc = airQuality.main(["--dry-run", str(out)])
