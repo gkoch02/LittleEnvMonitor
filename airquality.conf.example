@@ -9,11 +9,11 @@ sensor_id = YOUR_SENSOR_ID
 # these coords are used to pull a fallback reading from Open-Meteo (no key
 # required). Omit the section to disable the fallback.
 [weather]
-latitude = 37.2872
-longitude = -121.9500
+latitude = 51.4769
+longitude = -0.0005
 
 # Optional. City name shown in the e-ink title bar ("Air Quality - <city>").
-# Defaults to "Campbell" if omitted.
+# Omit it for a plain "Air Quality" title.
 #
 # Optional. `theme` picks the display layout / typeface. Supported values:
 #   default - two-column layout with stat rows on the left and a hero AQI on the right
@@ -21,5 +21,5 @@ longitude = -121.9500
 #   fredoka - same layout as default, rendered in the rounder Fredoka typeface
 # Defaults to "default" if omitted.
 [display]
-city = Campbell
+city = Greenwich
 theme = default

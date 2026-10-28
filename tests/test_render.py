@@ -27,7 +27,7 @@ def _payload(pm25=12.0, pm10=18.0, temp=70, humidity=45, time="12:00 PM"):
 def _render(**overrides):
     kwargs = dict(
         data=_payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
-        cat_color="black", city="Campbell", stale=False,
+        cat_color="black", city="Greenwich", stale=False,
     )
     kwargs.update(overrides)
     return airQuality._render_panel_images(**kwargs)
@@ -112,7 +112,7 @@ def test_render_preview_png_writes_valid_image(tmp_path):
     out = tmp_path / "preview.png"
     returned = airQuality.render_preview_png(
         _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
-        cat_color="black", city="Campbell", stale=False, out_path=str(out),
+        cat_color="black", city="Greenwich", stale=False, out_path=str(out),
         scale=2,
     )
     assert returned == str(out)
@@ -135,7 +135,7 @@ def test_render_preview_png_composites_black_over_red(tmp_path, monkeypatch):
 
     airQuality.render_preview_png(
         _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
-        cat_color="black", city="Campbell", out_path=str(out), scale=1,
+        cat_color="black", city="Greenwich", out_path=str(out), scale=1,
     )
 
     img = Image.open(out)
@@ -149,7 +149,7 @@ def test_render_preview_png_creates_parent_dirs(tmp_path):
     out = tmp_path / "deep" / "nested" / "preview.png"
     airQuality.render_preview_png(
         _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
-        cat_color="black", city="Campbell", stale=False, out_path=str(out),
+        cat_color="black", city="Greenwich", stale=False, out_path=str(out),
     )
     assert out.is_file()
 

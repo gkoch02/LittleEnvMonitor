@@ -33,7 +33,7 @@ def test_conf_example_loads_via_load_config(tmp_path, monkeypatch):
     lat, lon = weather_coords
     assert -90 <= lat <= 90
     assert -180 <= lon <= 180
-    assert city == "Campbell"
+    assert city == "Greenwich"
     assert theme in airQuality.SUPPORTED_THEMES
 
 
