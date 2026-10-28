@@ -124,7 +124,7 @@ def load_config(path):
             )
         weather_coords = (lat, lon)
 
-    city = parser.get("display", "city", fallback="Campbell").strip() or "Campbell"
+    city = parser.get("display", "city", fallback="").strip()
     theme_raw = parser.get("display", "theme", fallback=DEFAULT_THEME).strip().lower()
     theme = theme_raw or DEFAULT_THEME
     if theme not in SUPPORTED_THEMES:
@@ -548,7 +548,7 @@ def _render_panel_images(
     elif alert:
         title = "AQI Rising!"
     else:
-        title = f"Air Quality - {city}"
+        title = f"Air Quality - {city}" if city else "Air Quality"
     draw_red.text((10, 7), title, font=font_title, fill=0)
 
     # Hairline divider under the title bar.

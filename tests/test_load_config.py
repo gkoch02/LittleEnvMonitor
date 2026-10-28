@@ -43,7 +43,7 @@ def test_valid_config_returns_key_and_id(tmp_path):
     assert api_key == "real-key"
     assert sensor_id == 98765
     assert weather is None
-    assert city == "Campbell"
+    assert city == ""
     assert theme == "default"
 
 
@@ -72,9 +72,9 @@ def test_invalid_weather_section_raises(tmp_path, weather):
     [
         ("city = San Jose", "San Jose"),
         ("city =   Oakland   ", "Oakland"),
-        ("city =   ", "Campbell"),
+        ("city =   ", ""),
     ],
-    ids=["override", "stripped", "blank-falls-back"],
+    ids=["override", "stripped", "blank"],
 )
 def test_display_city(tmp_path, line, expected):
     _, _, _, city, _ = _load(tmp_path, BASE + f"[display]\n{line}\n")

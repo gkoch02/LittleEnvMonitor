@@ -25,7 +25,7 @@ def _clear_epd_instances():
 def test_normal_render_drives_panel_lifecycle():
     airQuality.display_air_quality(
         _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
-        cat_color="black", city="Campbell",
+        cat_color="black", city="Greenwich",
     )
     assert len(epd2in13b_V4.EPD.instances) == 1
     calls = [c[0] for c in epd2in13b_V4.EPD.instances[0].calls]
@@ -41,7 +41,7 @@ def test_init_minus_one_raises_but_still_sleeps(monkeypatch):
     with pytest.raises(RuntimeError, match="epd.init failed"):
         airQuality.display_air_quality(
             _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
-            cat_color="black", city="Campbell",
+            cat_color="black", city="Greenwich",
         )
     # Panel sleep invariant: even on init failure, sleep still runs.
     calls = [c[0] for c in epd2in13b_V4.EPD.instances[0].calls]
@@ -61,7 +61,7 @@ def test_stuck_display_triggers_alarm_timeout(monkeypatch):
     with pytest.raises(TimeoutError):
         airQuality.display_air_quality(
             _payload(), alert=False, trend_symbol="-", aqi_value=50, category="Good",
-            cat_color="black", city="Campbell",
+            cat_color="black", city="Greenwich",
         )
     elapsed = time.monotonic() - start
     # Should fire well before the 5s sleep would naturally finish.
@@ -88,7 +88,7 @@ def test_stuck_sleep_is_also_fenced(monkeypatch):
     # the call to return within ~SLEEP_TIMEOUT_SEC, not hang for 5s.
     airQuality.display_air_quality(
         _payload(), alert=False, trend_symbol="-", aqi_value=50, category="Good",
-        cat_color="black", city="Campbell",
+        cat_color="black", city="Greenwich",
     )
     elapsed = time.monotonic() - start
     assert elapsed < 3.0
@@ -102,7 +102,7 @@ def test_display_routes_black_buffer_first_red_second():
     against the args passed to display()."""
     airQuality.display_air_quality(
         _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
-        cat_color="black", city="Campbell",
+        cat_color="black", city="Greenwich",
     )
     calls = epd2in13b_V4.EPD.instances[0].calls
     getbuffers = [c for c in calls if c[0] == "getbuffer"]
@@ -136,6 +136,6 @@ def test_sleep_exception_is_logged_not_raised(monkeypatch, caplog):
     with caplog.at_level("ERROR"):
         airQuality.display_air_quality(
             _payload(), alert=False, trend_symbol="+", aqi_value=50, category="Good",
-            cat_color="black", city="Campbell",
+            cat_color="black", city="Greenwich",
         )
     assert any("Failed to put e-ink panel to sleep" in m for m in caplog.messages)

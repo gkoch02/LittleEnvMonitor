@@ -6,15 +6,15 @@
 [![Raspberry Pi](https://img.shields.io/badge/Raspberry%20Pi-C51A4A?logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-An air quality monitor for a Raspberry Pi Zero driving a [Waveshare 2.13" black/red e-ink display (V4)](https://www.waveshare.com/wiki/2.13inch_e-Paper_HAT_%28E%29_Manual).
+An air quality monitor for a Raspberry Pi Zero driving a [Waveshare 2.13" black/red e-ink display (V4)](https://www.waveshare.com/wiki/2.13inch_e-Paper_HAT_(B)_Manual).
 
 Pulls PM2.5, PM10, temperature, and humidity from a [PurpleAir](https://www2.purpleair.com) sensor via the PurpleAir API, classifies the AQI, and renders it to the display every 30 minutes during the day (08:00–21:30). If the live fetch fails, the script falls back to the last cached reading (the full payload, with the header relabelled `[CACHED]`) so the panel keeps showing useful data through transient outages.
 
 PurpleAir's `last_seen` timestamp is checked on every fetch: a sample older than `FRESHNESS_THRESHOLD_SEC` (60 minutes), missing, malformed, or skewed suspiciously far into the future is treated the same as a failed fetch — it's never shown as a live update, cached, or used to advance the heartbeat. The panel falls back to the previous `[CACHED]` reading instead, so a sensor that's silently stopped reporting (while the API keeps serving its last known value) doesn't masquerade as fresh data.
 
-### Themes
+## Themes
 
-The layout is selectable via `[display] theme` in `airquality.conf`. Three variants ship today:
+The layout is selectable via `[display] theme` in `airquality.conf`:
 
 | `default` | `minimal` | `fredoka` |
 |-----------|-----------|-----------|
@@ -25,21 +25,15 @@ The layout is selectable via `[display] theme` in `airquality.conf`. Three varia
 
 ## Hardware
 
-- Raspberry Pi Zero (or any Pi with SPI)
-- Waveshare 2.13" e-Paper HAT V4 — black **and red** ink (epd2in13b_V4)
-- A PurpleAir outdoor sensor (any model with API access)
+A Raspberry Pi Zero (or any Pi with SPI), a Waveshare 2.13" e-Paper HAT V4 with black **and red** ink (`epd2in13b_V4`), and a PurpleAir outdoor sensor (any model with API access).
 
 ## Display layout
 
-- **Header (red).** Shows one of three things, in priority order:
-  - `"Air Quality [CACHED]"` — when the live fetch failed and the reading came from disk.
-  - `"AQI Rising!"` — when PM2.5 has climbed by at least `TREND_THRESHOLD` µg/m³ since the previous reading.
-  - The location label otherwise (`"Air Quality - <city>"`). The city comes from `[display] city` in `airquality.conf` and defaults to `Campbell`.
-- **Left column (black).** Compact stat rows: PM2.5 with a `+`/`-` trend marker, PM10, temperature, humidity.
-- **Right column — hero AQI.** Large numeric AQI under a small `AQI` caption with the category label beneath (e.g. `Good`, `Moderate`, `USG`, `Unhealthy`). The numeric AQI uses EPA's piecewise-linear PM2.5 → AQI conversion; `--` is shown if the reading is unusable.
-- **Hero number renders red** when the category is "Unhealthy for Sensitive Groups" or worse (PM2.5 > 35.4 µg/m³); otherwise black.
-- **AQI gauge bar (bottom).** Outlined rectangle with a red fill proportional to `min(AQI, 300) / 300`, so a saturated bar means "at least very unhealthy." On a `[CACHED]` render the bar is outlined-only — no red fill — to visually echo "this isn't fresh."
-- **Timestamp (red, bottom-right)** — when the panel was rendered; on a `[CACHED]` render, when the cached reading was taken, so an old reading never looks fresh. Shares the bottom strip with the gauge.
+The red header shows one of three things, in priority order: `Air Quality [CACHED]` when the live fetch failed and the reading came from disk, `AQI Rising!` when PM2.5 has climbed by at least `TREND_THRESHOLD` µg/m³ since the previous reading, and otherwise the location label, `Air Quality - <city>` from `[display] city` (or just `Air Quality` without one).
+
+The left column holds compact stat rows in black: PM2.5 with a `+`/`-` trend marker, PM10, temperature, humidity. The right column is the hero AQI: a large number under a small `AQI` caption with the category label beneath (`Good`, `Moderate`, `USG`, `Unhealthy`…), using EPA's piecewise-linear PM2.5 → AQI conversion, or `--` if the reading is unusable. The number renders red when the category is "Unhealthy for Sensitive Groups" or worse (PM2.5 > 35.4 µg/m³).
+
+Along the bottom, a gauge bar fills red in proportion to `min(AQI, 300) / 300`, so a saturated bar means "at least very unhealthy"; on a `[CACHED]` render it is outlined only, to echo "this isn't fresh". The timestamp beside it, in red, is when the panel was rendered, or on a `[CACHED]` render when the cached reading was taken, so an old reading never looks fresh.
 
 ## Rebuilding from scratch
 
@@ -49,15 +43,7 @@ cd LittleEnvMonitor
 bash deploy.sh
 ```
 
-The deploy script:
-
-- installs system packages and creates a Python virtualenv at `.venv/`
-- enables SPI via `raspi-config` (if available)
-- prompts you to fill in `airquality.conf` and validates it
-- creates the state directory `/var/lib/airquality/` for the cached reading
-- renders the systemd unit using the current user, repo path, and venv Python, then enables the timer
-
-It works regardless of what user you're running as (no hardcoded `pi`/`/home/pi`).
+The deploy script installs system packages and creates a Python virtualenv at `.venv/`, enables SPI via `raspi-config` (if available), prompts you to fill in `airquality.conf` and validates it, creates the state directory `/var/lib/airquality/` for the cached reading, then renders the systemd unit using the current user, repo path, and venv Python and enables the timer. It works as whatever user you run it as, with no hardcoded `pi` or `/home/pi`.
 
 > **Note:** If SPI wasn't already enabled, you may need to reboot before the display responds.
 
@@ -70,7 +56,7 @@ cp airquality.conf.example airquality.conf
 nano airquality.conf
 ```
 
-The file is a tiny INI:
+The file is an INI with one required section:
 
 ```ini
 [purpleair]
@@ -80,7 +66,8 @@ sensor_id = YOUR_SENSOR_ID
 
 - **`api_key`** — request one at [api.purpleair.com](https://api.purpleair.com) (PurpleAir issues a read key and a write key; this script only needs the read key). Can also be set via the `PURPLEAIR_API_KEY` env var, which wins over the file. Use the env var path with `EnvironmentFile=` (mode 0600) when you'd rather not keep the secret in the repo dir.
 - **`sensor_id`** — the integer that appears in the PurpleAir map URL when you click your sensor.
-- **`[display] city`** — optional. Shown in the title bar (`"Air Quality - <city>"`). Defaults to `Campbell`.
+- **`[weather] latitude` / `longitude`** — optional. When the sensor stops reporting temperature or humidity, those two values are fetched from [Open-Meteo](https://open-meteo.com) (no key needed) for these coordinates instead; they are never taken from the cache. Omit the section to disable the fallback.
+- **`[display] city`** — optional. Shown in the title bar (`Air Quality - <city>`); without it the title is just `Air Quality`.
 - **`[display] theme`** — optional. Picks the display variant: `default`, `minimal`, or `fredoka`. See the [Themes](#themes) section above for screenshots. Defaults to `default`.
 
 `airquality.conf` is gitignored, so your key won't be committed.
@@ -99,7 +86,7 @@ The timer only fires between 08:00 and 21:30, so the heartbeat will naturally go
 
 Runs every 30 minutes between 08:00 and 21:30 via a systemd timer (no overnight refreshes). On each tick the script either renders a fresh reading or — if PurpleAir is unreachable — re-renders the last cached reading marked `[CACHED]`, so the display keeps showing useful data through transient outages.
 
-The timer unit deliberately does not set `Persistent=true`: a missed daytime tick (e.g. the Pi was powered off) is simply skipped rather than replayed, so a Pi that boots back up overnight (say the Pi was off at 21:30 and boots back up at 23:00) doesn't trigger a live refresh at an undocumented hour — the "no overnight refreshes" promise holds even after downtime. The next scheduled daytime tick runs normally. A manual run (see below) always runs immediately regardless of time of day; it's independent of the timer.
+The timer does not set `Persistent=true`, so a daytime tick missed while the Pi was off is skipped rather than replayed at boot, which could otherwise land at an undocumented hour overnight. A manual run (below) always runs immediately regardless of time of day; it's independent of the timer.
 
 To trigger a manual run and watch logs:
 
@@ -117,7 +104,7 @@ systemctl list-timers airquality.timer
 
 ## Dry-run preview
 
-To sanity-check a layout change (or just see what the panel would show) without e-ink hardware, run with `--dry-run`. It fetches real PurpleAir data, runs the same trend / AQI / category logic, and writes a PNG instead of pushing to the panel. Cache and heartbeat are left untouched.
+To sanity-check a layout change (or see what the panel would show) without e-ink hardware, run with `--dry-run`. It fetches real PurpleAir data, runs the same trend / AQI / category logic, and writes a PNG instead of pushing to the panel. Cache and heartbeat are left untouched.
 
 ```bash
 .venv/bin/python airQuality.py --dry-run                  # ./airquality-preview.png

@@ -45,7 +45,7 @@ def render():
             aqi_value=35,
             category="Good",
             cat_color="black",
-            city="Campbell",
+            city="Greenwich",
             stale=False,
             out_path=out,
             scale=3,
