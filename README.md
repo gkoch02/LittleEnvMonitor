@@ -1,12 +1,10 @@
-# Little Env Monitor
+![Little Env Monitor: the wordmark and an AQI gauge beside the panel, which reads Air Quality - Greenwich with PM2.5, PM10, temperature and humidity on the left and a large AQI of 35, Good, on the right](docs/banner.png)
 
 [![CI](https://github.com/gkoch02/LittleEnvMonitor/actions/workflows/ci.yml/badge.svg)](https://github.com/gkoch02/LittleEnvMonitor/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/gkoch02/LittleEnvMonitor/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/gkoch02/LittleEnvMonitor/actions/workflows/github-code-scanning/codeql)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](.github/workflows/ci.yml)
 [![Raspberry Pi](https://img.shields.io/badge/Raspberry%20Pi-C51A4A?logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-
-![Little Env Monitor: the wordmark and an AQI gauge beside the panel, which reads Air Quality - Greenwich with PM2.5, PM10, temperature and humidity on the left and a large AQI of 35, Good, on the right](docs/banner.png)
 
 An air quality monitor for a Raspberry Pi Zero driving a [Waveshare 2.13" black/red e-ink display (V4)](https://www.waveshare.com/wiki/2.13inch_e-Paper_HAT_(B)_Manual).
 
