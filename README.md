@@ -6,6 +6,8 @@
 [![Raspberry Pi](https://img.shields.io/badge/Raspberry%20Pi-C51A4A?logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+![Little Env Monitor: the wordmark and an AQI gauge beside the panel, which reads Air Quality - Greenwich with PM2.5, PM10, temperature and humidity on the left and a large AQI of 35, Good, on the right](docs/banner.png)
+
 An air quality monitor for a Raspberry Pi Zero driving a [Waveshare 2.13" black/red e-ink display (V4)](https://www.waveshare.com/wiki/2.13inch_e-Paper_HAT_(B)_Manual).
 
 Pulls PM2.5, PM10, temperature, and humidity from a [PurpleAir](https://www2.purpleair.com) sensor via the PurpleAir API, classifies the AQI, and renders it to the display every 30 minutes during the day (08:00–21:30). If the live fetch fails, the script falls back to the last cached reading (the full payload, with the header relabelled `[CACHED]`) so the panel keeps showing useful data through transient outages.
