@@ -3,7 +3,7 @@
 # (RPi.GPIO, spidev), which only build on a Pi.
 Pillow~=13.0
 requests~=2.32
-pytest>=8.0,<10.0
+pytest>=9.2.0,<10.0
 pytest-cov>=7.1.0,<8.0
 ruff>=0.17.4,<1.0
 mypy>=1.10,<2.0
