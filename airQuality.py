@@ -9,7 +9,7 @@ import signal
 import sys
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import requests
 from PIL import Image, ImageChops, ImageDraw, ImageFont
@@ -391,7 +391,7 @@ def write_heartbeat():
     os.makedirs(os.path.dirname(HEARTBEAT_PATH), exist_ok=True)
     tmp = HEARTBEAT_PATH + ".tmp"
     with open(tmp, "w") as f:
-        f.write(datetime.now(timezone.utc).isoformat())
+        f.write(datetime.now(UTC).isoformat())
     os.replace(tmp, HEARTBEAT_PATH)
 
 

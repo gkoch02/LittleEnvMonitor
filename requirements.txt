@@ -1,4 +1,4 @@
-Pillow~=11.0
+Pillow~=13.0
 requests~=2.32
 RPi.GPIO>=0.7.1,<1.0
 spidev>=3.6,<4.0
