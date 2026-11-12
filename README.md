@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/gkoch02/LittleEnvMonitor/actions/workflows/ci.yml/badge.svg)](https://github.com/gkoch02/LittleEnvMonitor/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/gkoch02/LittleEnvMonitor/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/gkoch02/LittleEnvMonitor/actions/workflows/github-code-scanning/codeql)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](.github/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](.github/workflows/ci.yml)
 [![Raspberry Pi](https://img.shields.io/badge/Raspberry%20Pi-C51A4A?logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -122,7 +122,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-CI runs the same suite on every push and pull request across Python 3.10, 3.11, and 3.12 (see `.github/workflows/ci.yml`).
+CI runs the same suite on every push and pull request across Python 3.11 and 3.12 (see `.github/workflows/ci.yml`).
 
 ## Files
 

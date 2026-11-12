@@ -9,7 +9,7 @@ exercised in its own dedicated tests, not here.
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from conftest import network_down
@@ -270,7 +270,7 @@ def test_heartbeat_content_is_iso8601_utc(state_dir, conf, display_recorder, mon
     parsed = datetime.fromisoformat(raw)
     assert parsed.tzinfo is not None
     # Within a minute of "now" — not a frozen string.
-    assert abs((datetime.now(timezone.utc) - parsed).total_seconds()) < 60
+    assert abs((datetime.now(UTC) - parsed).total_seconds()) < 60
 
 
 def test_missing_temp_humidity_with_no_weather_section_logs_and_continues(
