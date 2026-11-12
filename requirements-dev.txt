@@ -2,7 +2,7 @@
 # On the Pi, also install requirements.txt for the hardware libraries
 # (RPi.GPIO, spidev), which only build on a Pi.
 Pillow~=13.0
-requests~=2.32
+requests~=2.34
 pytest>=9.2.0,<10.0
 pytest-cov>=7.1.0,<8.0
 ruff>=0.17.4,<1.0
