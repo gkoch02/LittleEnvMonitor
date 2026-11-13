@@ -26,6 +26,7 @@ Each rule's reasoning lives in a comment next to the code it protects; read that
 
 **Startup and config**
 - Call `load_config()` inside `main()`, not at import, and have it raise `SystemExit` with a readable message. That keeps a bad config from crashing before the cache-fallback path.
+- A new setting goes in `_CONFIG_KEYS` as well as being read, or every run warns that it's unknown.
 - A non-blank `PURPLEAIR_API_KEY` env var wins over the file. `deploy.sh` validates by calling `load_config()` itself, so don't reimplement config rules in shell.
 - Don't hardcode the city (`[display] city`; blank means a plain "Air Quality" title) or add themes outside `SUPPORTED_THEMES`.
 
