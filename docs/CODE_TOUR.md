@@ -42,7 +42,7 @@ Say the timer fires at 14:30. Here's the path, with the function at each step; a
 
 **1. systemd starts the script.** `airquality.timer` starts `airquality.service`, which runs the script with the repo's `.venv` Python and tells it where to keep its files (`AIRQUALITY_STATE_DIR=/var/lib/airquality`).
 
-**2. Read the settings.** `main()` calls `load_config()`, which reads `airquality.conf` next to the script: the PurpleAir key and sensor number, optional coordinates for the weather fallback, the city and the theme. Anything missing or wrong stops the run with a one-line message saying what.
+**2. Read the settings.** `main()` calls `load_config()`, which reads `airquality.conf` next to the script: the PurpleAir key and sensor number, optional coordinates for the weather fallback, the city and the theme. Anything missing or wrong, or a file configparser can't parse, stops the run with a one-line message saying what and, for a parse error, on which line. A setting or section name it doesn't know (`_CONFIG_KEYS`) only logs a warning.
 
 **3. Fetch.** `fetch_purpleair_data()` asks PurpleAir for PM2.5, PM10, humidity, temperature and `last_seen`. A network error, a server error or "slow down" (429) is retried up to three times with a pause; a refused key or unknown sensor (any other 4xx) gives up at once, since retrying won't help.
 
@@ -127,7 +127,8 @@ Read it **from the bottom up**:
 | `ConnectionError`, `Timeout` | No network, or PurpleAir is down. It recovers by itself |
 | `epd.init failed (SPI/GPIO unavailable)` | The panel can't be reached: SPI is off, the ribbon is loose, or another program has the GPIO pins (`GPIO busy`) |
 | `TimeoutError` from `_alarm` | The panel stopped answering mid-draw |
-| `Config file not found`, `Invalid config` | A settings problem; the message names the file and the field |
+| `Config file not found`, `Invalid config` | A settings problem; the message names the file and the field, or the line it couldn't parse |
+| `Unknown key 'x' in [section]`, `Unknown section [x]` | A misspelled setting, ignored; the warning suggests the closest real name |
 | `ModuleNotFoundError: No module named 'x'` | The Python environment is missing something; see `MAINTAINING.md` |
 
 ## Making a change

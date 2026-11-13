@@ -55,7 +55,7 @@ sudo systemctl start airquality.service                                         
 journalctl -u airquality.service -n 5 --no-pager                                         # 5. check it worked
 ```
 
-Step 3 prints `config OK`, or a message naming the problem (`Invalid theme 'fancy' …`, `Set a real api_key …`). A file the reader can't parse at all, such as a section header missing its `]`, gives a short Python error instead; restore the backup if you can't see it. The check doesn't notice a misspelled setting *name* (`thme = minimal`): that line is just ignored and the default used, so if a change seems to have no effect, check the spelling against `airquality.conf.example`.
+Step 3 prints `config OK`, or a message naming the problem (`Invalid theme 'fancy' …`, `Set a real api_key …`). A file it can't parse at all gets the same kind of message, with the line: `Invalid config at …/airquality.conf: line 4: can't read '[display'` for a section header missing its `]`, or `'theme' appears twice in [display]`. A `%` in a value has to be written `%%`. A misspelled setting or section name doesn't stop the run, but step 3 prints a warning above `config OK`, naming the file, section and key, with the closest real name when there is one: `Unknown key 'thme' in [display] of …/airquality.conf, ignored; did you mean 'theme'?`. The setting it meant keeps its default until the spelling is fixed. Every run logs the same warning, so it also shows in step 5.
 
 The settings, all in `airquality.conf.example` with comments:
 

@@ -1,5 +1,7 @@
 import argparse
+import ast
 import configparser
+import difflib
 import functools
 import json
 import logging
@@ -87,14 +89,82 @@ _PM25_AQI_BREAKPOINTS = (
 )
 
 
+# Every key load_config() reads, by section. configparser keeps any other key
+# without complaint, so a misspelled one would otherwise do nothing silently.
+_CONFIG_KEYS = {
+    "purpleair": ("api_key", "sensor_id"),
+    "weather": ("latitude", "longitude"),
+    "display": ("city", "theme"),
+}
+
+
+def _describe_config_error(e):
+    """One line naming the line number and the problem, for a parse error."""
+    if isinstance(e, configparser.MissingSectionHeaderError):
+        return f"line {e.lineno}: {e.line.strip()!r} comes before any [section] header"
+    if isinstance(e, configparser.DuplicateOptionError):
+        return f"line {e.lineno}: '{e.option}' appears twice in [{e.section}]"
+    if isinstance(e, configparser.DuplicateSectionError):
+        return f"line {e.lineno}: [{e.section}] appears twice"
+    if isinstance(e, configparser.ParsingError):
+        # Python 3.11/3.12 store each bad line as its repr(), 3.13+ as the text.
+        as_repr = sys.version_info < (3, 13)
+        lines = [(n, ast.literal_eval(line) if as_repr else line) for n, line in e.errors]
+        return "; ".join(f"line {n}: can't read {line.strip()!r}" for n, line in lines)
+    # What's left is an InterpolationError, from a value with a bare '%'.
+    return f"'{e.option}' in [{e.section}]: {e.message} (write '%%' for a literal '%')"
+
+
+def _warn_unknown_config_keys(parser, path):
+    def hint(name, known):
+        close = difflib.get_close_matches(name, known, n=1)
+        return f"; did you mean '{close[0]}'?" if close else ""
+
+    for section in parser.sections():
+        if section not in _CONFIG_KEYS:
+            log.warning(
+                "Unknown section [%s] in %s, ignored%s",
+                section,
+                path,
+                hint(section, list(_CONFIG_KEYS)),
+            )
+            continue
+        known = _CONFIG_KEYS[section]
+        for key in parser.options(section):
+            if key not in known and key not in parser.defaults():
+                log.warning(
+                    "Unknown key '%s' in [%s] of %s, ignored%s",
+                    key,
+                    section,
+                    path,
+                    hint(key, known),
+                )
+    every_key = [key for keys in _CONFIG_KEYS.values() for key in keys]
+    for key in parser.defaults():
+        if key not in every_key:
+            log.warning(
+                "Unknown key '%s' in [DEFAULT] of %s, ignored%s", key, path, hint(key, every_key)
+            )
+
+
 def load_config(path):
     if not os.path.isfile(path):
         raise SystemExit(
             f"Config file not found: {path}\n"
             f"Copy airquality.conf.example to airquality.conf and fill in your credentials."
         )
+    try:
+        return _load_config(path)
+    except configparser.Error as e:
+        raise SystemExit(f"Invalid config at {path}: {_describe_config_error(e)}") from e
+    except UnicodeDecodeError as e:
+        raise SystemExit(f"Invalid config at {path}: not a text file ({e.reason})") from e
+
+
+def _load_config(path):
     parser = configparser.ConfigParser()
     parser.read(path)
+    _warn_unknown_config_keys(parser, path)
     try:
         # Env var wins over the config file so the systemd unit can ship the
         # secret via EnvironmentFile= (mode 0600) instead of the repo dir.
