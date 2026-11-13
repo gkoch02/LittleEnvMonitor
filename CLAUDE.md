@@ -4,7 +4,7 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 ## What this is
 
-A single-script Raspberry Pi air quality monitor. `airQuality.py` runs once per systemd timer tick, fetches a PurpleAir sensor, renders the reading to a Waveshare 2.13" black/red e-ink panel (`epd2in13b_V4`), and caches the reading so the next tick can fall back to it if the fetch fails. No build step, no package. The README covers features, config, and deployment; this file covers the rules for changing the code.
+A single-script Raspberry Pi air quality monitor. `airQuality.py` runs once per systemd timer tick, fetches a PurpleAir sensor, renders the reading to a Waveshare 2.13" black/red e-ink panel (`epd2in13b_V4`), and caches the reading so the next tick can fall back to it if the fetch fails. No build step, no package. The README covers features, config, and deployment; this file covers the rules for changing the code. `docs/CODE_TOUR.md` walks one run through the code and names functions, so update it when you rename or move one; `MAINTAINING.md` is the Pi operator's guide.
 
 ## Commands
 

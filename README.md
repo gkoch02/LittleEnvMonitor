@@ -130,6 +130,8 @@ CI runs the same suite on every push and pull request across Python 3.11 and 3.1
 |------|---------|
 | `airQuality.py` | Main script — fetches data, classifies AQI, drives display |
 | `airquality.conf.example` | Config template (copy to `airquality.conf` and fill in) |
+| `docs/CODE_TOUR.md` | A walk through the code: one reading from PurpleAir to the panel, step by step |
+| `MAINTAINING.md` | Looking after a running panel: health checks, settings, updates, backups, rebuilding the Pi |
 | `deploy.sh` | One-shot deploy script for fresh Pi setup |
 | `requirements.txt` | Runtime Python dependencies (includes Pi-only hardware libs) |
 | `requirements-dev.txt` | Test dependencies (works on any machine) |
