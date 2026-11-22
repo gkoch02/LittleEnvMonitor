@@ -122,7 +122,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-CI runs the same suite on every push and pull request across Python 3.11 and 3.12 (see `.github/workflows/ci.yml`).
+CI runs the same suite on pull requests and pushes to `main` across Python 3.11 and 3.12 (see `.github/workflows/ci.yml`).
 
 ## Files
 
@@ -136,7 +136,7 @@ CI runs the same suite on every push and pull request across Python 3.11 and 3.1
 | `requirements.txt` | Runtime Python dependencies (includes Pi-only hardware libs) |
 | `requirements-dev.txt` | Test dependencies (works on any machine) |
 | `tests/` | Pytest suite for the platform-independent code paths |
-| `.github/workflows/ci.yml` | CI workflow: `ruff`, `mypy`, `pytest`, `shellcheck`, and `systemd-analyze verify` on push and pull request |
+| `.github/workflows/ci.yml` | CI workflow: `ruff`, `mypy`, `pytest`, `shellcheck`, and `systemd-analyze verify` on pull requests and pushes to `main` |
 | `systemd/airquality.service.in` | systemd oneshot service unit template — rendered by `deploy.sh` |
 | `systemd/airquality.timer` | systemd timer (every 30 min, 8 AM–9:30 PM) |
 | `waveshare_epd/` | Waveshare e-Paper Python library (MIT, from [Waveshare's e-Paper repo](https://github.com/waveshare/e-Paper)). See `waveshare_epd/UPSTREAM.md` for vendored versions. |
